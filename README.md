@@ -1,6 +1,6 @@
 # rclean
 
-A cargo subcommand to recursively clean Cargo projects with workspace support. Available in both **bash script** and **Rust implementation**.
+A cargo subcommand to recursively clean Cargo projects with workspace support.
 
 ## 🚀 Quick Start
 
@@ -26,30 +26,6 @@ cargo build --release
 # Use it directly
 ./target/release/cargo-rclean [options] [directory]
 ```
-
-### Bash Script
-
-```bash
-# Make executable and run
-chmod +x cargo-clean-recursive.sh
-./cargo-clean-recursive.sh [directory]
-```
-
-## 📊 Comparison
-
-| Feature | Bash Script | Rust Implementation |
-|---------|-------------|---------------------|
-| **Cross-platform** | Partial (OS-specific code) | ✅ Full |
-| **Workspace detection** | Fragile (grep-based) | ✅ Robust (cargo-metadata API) |
-| **Parallel processing** | ❌ Sequential | ✅ Parallel (configurable) |
-| **Dry-run mode** | ❌ No | ✅ Yes (`--dry-run`) |
-| **Exclude patterns** | ❌ No | ✅ Yes (`--exclude`) |
-| **Progress indication** | ❌ No | ✅ Yes (progress bar) |
-| **JSON output** | ❌ No | ✅ Yes (`--json`) |
-| **Error handling** | Basic | ✅ Strong (Result types) |
-| **Performance** | Sequential | ✅ Parallel (much faster) |
-| **Maintainability** | Medium | ✅ High (type-safe) |
-| **Distribution** | Script file | ✅ Single binary |
 
 ## 🎯 Usage
 
@@ -91,7 +67,7 @@ cargo-rclean --dry-run
 ### Advanced Options
 
 ```bash
-cargo-cleaner --help
+cargo rclean --help
 ```
 
 **Options:**
@@ -101,38 +77,22 @@ cargo-cleaner --help
 - `-v, --verbose`: Verbose output
 - `--json`: Output results as JSON
 
-## 📝 Bash Script Features
+## ✨ Features
 
-The bash script provides basic recursive cleaning functionality:
-
-```bash
-# Clean all Cargo projects in current directory
-./cargo-clean-recursive.sh
-
-# Clean all Cargo projects in a specific directory
-./cargo-clean-recursive.sh /path/to/projects
-
-# Show help
-./cargo-clean-recursive.sh --help
-```
-
-### Features
-- ✅ Recursive cleaning
-- ✅ Basic workspace support
-- ✅ Size calculation before/after
-- ✅ Color-coded output
-- ✅ Error recovery
+- ✅ **Cross-platform**: Works on Windows, macOS, and Linux
+- ✅ **Robust workspace detection**: Uses cargo-metadata API for accurate workspace detection
+- ✅ **Parallel processing**: Clean multiple projects simultaneously (configurable)
+- ✅ **Dry-run mode**: Preview what would be cleaned without making changes
+- ✅ **Exclude patterns**: Skip specific directories using glob patterns
+- ✅ **Progress indication**: Real-time progress bars showing which projects are being cleaned
+- ✅ **JSON output**: Machine-readable output for scripting and automation
+- ✅ **Strong error handling**: Detailed error messages and graceful error recovery
+- ✅ **High performance**: Parallel execution for fast cleaning of large project trees
 
 ## 🔧 Requirements
 
-### Rust Implementation
 - Rust toolchain (for building)
 - Cargo (Rust package manager)
-
-### Bash Script
-- Bash shell
-- Cargo (Rust package manager)
-- Standard Unix utilities (find, grep, etc.)
 
 ## 📦 Installation
 
@@ -140,7 +100,8 @@ The bash script provides basic recursive cleaning functionality:
 
 ```bash
 # Clone or download this repository
-cd cargo-cleaner
+git clone https://github.com/yingkitw/rclean.git
+cd rclean
 
 # Install as a cargo plugin
 cargo install --path .
@@ -155,7 +116,8 @@ cargo rclean
 
 ```bash
 # Clone or download this repository
-cd cargo-cleaner
+git clone https://github.com/yingkitw/rclean.git
+cd rclean
 
 # Build
 cargo build --release
@@ -164,26 +126,25 @@ cargo build --release
 ./target/release/cargo-rclean
 ```
 
-### Bash Script
-
-```bash
-# Make executable
-chmod +x cargo-clean-recursive.sh
-
-# Use directly
-./cargo-clean-recursive.sh
-```
-
 ## 🎨 Example Output
 
-### Rust Implementation
+### Standard Output
 
 ```
 [INFO] Starting cargo clean from: "/path/to/projects"
 [INFO] Searching for Cargo projects...
 [INFO] Found 5 project(s)
 
-Cleaning: project1  [████████████████████] 5/5 Done!
+⠋ Cleaning: project1
+⠙ Cleaning: project2
+⠹ Cleaning: project3
+[████████████████████░░░░] 3/5 projects completed
+
+✓ project1
+⠋ Cleaning: project4
+⠙ Cleaning: project5
+[████████████████████████] 5/5 projects completed
+All projects completed!
 
 [INFO] === SUMMARY ===
 [SUCCESS] Successfully cleaned: 5 project(s)
@@ -212,23 +173,24 @@ Cleaning: project1  [███████████████████�
 
 ## 🏗️ Architecture
 
-The Rust implementation uses:
+The implementation uses:
 - **cargo-metadata**: For proper workspace detection using Cargo's own APIs
 - **rayon**: For parallel processing
-- **indicatif**: For progress bars
+- **indicatif**: For progress bars with real-time project status
 - **clap**: For command-line argument parsing
 - **walkdir**: For efficient directory traversal
 
 ## 🐛 Error Handling
 
-Both implementations handle:
+The tool handles:
 - ✅ Missing workspace dependencies
 - ✅ Malformed Cargo.toml files
-- ✅ Failed cargo clean commands (with fallback)
+- ✅ Failed cargo clean commands (with fallback to direct target removal)
 - ✅ Permission errors
 - ✅ Missing directories
+- ✅ Network issues (when using cargo metadata)
 
-The Rust implementation provides more detailed error messages and better error recovery.
+Provides detailed error messages and continues processing other projects even if some fail.
 
 ## 📚 See Also
 
@@ -236,4 +198,8 @@ The Rust implementation provides more detailed error messages and better error r
 
 ## 🤝 Contributing
 
-Improvements and contributions are welcome! The Rust implementation is the recommended path forward for new features.
+Improvements and contributions are welcome! Please feel free to open issues or submit pull requests.
+
+## 📄 License
+
+Licensed under the Apache-2.0 license.
