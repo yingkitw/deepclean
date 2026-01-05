@@ -12,7 +12,6 @@ use deps::clean_dependencies;
 use output::{create_progress_bars, create_project_progress_bar, print_summary, print_verbose_cleaned, print_error, Summary};
 use project::find_cargo_projects;
 use rayon::prelude::*;
-use std::sync::Arc;
 use utils::{get_directory_size, parse_size};
 
 #[derive(Parser, Debug)]
@@ -168,16 +167,15 @@ fn main() -> Result<()> {
                     Ok(deps_clean) => {
                         if !deps_clean.unused_deps.is_empty() {
                             if !args.json {
+                                // Always show unused dependencies, not just in verbose mode
                                 println!(
-                                    "{} Found {} unused dependency(ies) in {:?}",
+                                    "{} Found {} unused dependency(ies) in {}:",
                                     "[INFO]".blue().bold(),
                                     deps_clean.unused_deps.len(),
-                                    project.path
+                                    project.path.display()
                                 );
-                                if args.verbose {
-                                    for dep in &deps_clean.unused_deps {
-                                        println!("  - {} ({})", dep.name, dep.location);
-                                    }
+                                for dep in &deps_clean.unused_deps {
+                                    println!("  {} {} ({})", "•".yellow(), dep.name.bright_yellow(), dep.location);
                                 }
                                 if deps_clean.removed_count > 0 {
                                     println!(
@@ -190,8 +188,20 @@ fn main() -> Result<()> {
                                         "{} Could not remove dependencies (install cargo-remove: cargo install cargo-edit)",
                                         "[WARNING]".yellow().bold()
                                     );
+                                } else if args.dry_run {
+                                    println!(
+                                        "{} Would remove {} dependency(ies) (use --remove-deps to actually remove)",
+                                        "[INFO]".blue().bold(),
+                                        deps_clean.unused_deps.len()
+                                    );
                                 }
                             }
+                        } else if args.verbose && !args.json {
+                            println!(
+                                "{} No unused dependencies found in {}",
+                                "[INFO]".blue().bold(),
+                                project.path.display()
+                            );
                         }
                     }
                     Err(e) => {
@@ -202,6 +212,9 @@ fn main() -> Result<()> {
                                 project.path,
                                 e
                             );
+                            if args.verbose {
+                                println!("  Hint: Install cargo-udeps or cargo-machete: cargo install cargo-udeps");
+                            }
                         }
                     }
                 }

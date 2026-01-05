@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use crate::project::Project;
-use std::path::Path;
 use std::process::Command;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -26,10 +25,23 @@ pub fn check_unused_dependencies(project: &Project) -> Result<Vec<UnusedDependen
         .current_dir(&project.path)
         .output();
 
-    if let Ok(output) = udeps_output {
-        if output.status.success() {
-            // Parse cargo-udeps JSON output
-            return parse_udeps_output(&String::from_utf8_lossy(&output.stdout));
+    if let Ok(output) = &udeps_output {
+        // cargo-udeps may exit with non-zero even when it finds unused deps
+        // Check if we got any output
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        
+        if !stdout.is_empty() || !stderr.is_empty() {
+            // Try parsing the output
+            let parsed = parse_udeps_output(&stdout);
+            if !parsed.is_empty() {
+                return Ok(parsed);
+            }
+            // Also check stderr for cargo-udeps output
+            let parsed_stderr = parse_udeps_output(&stderr);
+            if !parsed_stderr.is_empty() {
+                return Ok(parsed_stderr);
+            }
         }
     }
 
@@ -39,23 +51,51 @@ pub fn check_unused_dependencies(project: &Project) -> Result<Vec<UnusedDependen
         .current_dir(&project.path)
         .output();
 
-    if let Ok(output) = machete_output {
-        if output.status.success() || output.status.code() == Some(1) {
-            // cargo-machete exits with code 1 if unused deps found
-            return parse_machete_output(&String::from_utf8_lossy(&output.stdout));
+    if let Ok(output) = &machete_output {
+        // cargo-machete exits with code 1 if unused deps found, 0 if none found
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        
+        // Check both stdout and stderr
+        let parsed_stdout = parse_machete_output(&stdout)?;
+        if !parsed_stdout.is_empty() {
+            return Ok(parsed_stdout);
+        }
+        let parsed_stderr = parse_machete_output(&stderr)?;
+        if !parsed_stderr.is_empty() {
+            return Ok(parsed_stderr);
         }
     }
 
-    // If neither tool is available, try a simple approach
-    // Check if cargo-udeps or cargo-machete are installed
+    // If neither tool is available or found nothing, return empty
     Ok(vec![])
 }
 
 /// Parse cargo-udeps JSON output
-fn parse_udeps_output(output: &str) -> Result<Vec<UnusedDependency>> {
+fn parse_udeps_output(output: &str) -> Vec<UnusedDependency> {
     // cargo-udeps JSON format is complex, for now return empty
     // TODO: Implement proper JSON parsing
-    Ok(vec![])
+    // The JSON structure is: {"unused_deps": [{"name": "...", "location": "..."}]}
+    let mut unused = Vec::new();
+    
+    // Try to parse as JSON
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(output) {
+        if let Some(unused_deps) = json.get("unused_deps").and_then(|v| v.as_array()) {
+            for dep in unused_deps {
+                if let (Some(name), Some(location)) = (
+                    dep.get("name").and_then(|v| v.as_str()),
+                    dep.get("location").and_then(|v| v.as_str()),
+                ) {
+                    unused.push(UnusedDependency {
+                        name: name.to_string(),
+                        location: location.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    
+    unused
 }
 
 /// Parse cargo-machete output
@@ -63,7 +103,11 @@ fn parse_machete_output(output: &str) -> Result<Vec<UnusedDependency>> {
     let mut unused = Vec::new();
     
     for line in output.lines() {
-        // cargo-machete output format: "unused dependency: `dependency_name`"
+        // cargo-machete output formats:
+        // "unused dependency: `dependency_name`"
+        // or just the dependency name in some cases
+        let line = line.trim();
+        
         if line.contains("unused dependency:") {
             if let Some(start) = line.find('`') {
                 if let Some(end) = line[start + 1..].find('`') {
@@ -73,6 +117,15 @@ fn parse_machete_output(output: &str) -> Result<Vec<UnusedDependency>> {
                         location: "[dependencies]".to_string(), // machete doesn't specify location
                     });
                 }
+            }
+        } else if line.starts_with("`") && line.ends_with("`") && line.len() > 2 {
+            // Sometimes cargo-machete just outputs the dependency name in backticks
+            let dep_name = &line[1..line.len() - 1];
+            if !dep_name.is_empty() && !dep_name.contains(' ') {
+                unused.push(UnusedDependency {
+                    name: dep_name.to_string(),
+                    location: "[dependencies]".to_string(),
+                });
             }
         }
     }
