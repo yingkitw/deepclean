@@ -101,11 +101,12 @@ Output Formatting (human-readable or JSON)
 5. Report results
 
 **Dependency Cleaning (optional):**
-1. Check if `cargo-udeps` or `cargo-machete` is available
-2. Run dependency detection tool
-3. Parse output to find unused dependencies
-4. If `--remove-deps` is set, use `cargo-remove` to remove them
-5. Report unused dependencies and removal status
+1. Parse `Cargo.toml` to extract all dependencies
+2. Search through source code (`src/`, `examples/`, `tests/`, `build.rs`) for usage
+3. Match dependency names against code patterns (use statements, macro invocations, etc.)
+4. Report unused dependencies
+5. If `--remove-deps` is set, use `cargo-remove` to remove them
+6. Report removal status
 
 **Parallelization:**
 - Uses `rayon` for parallel execution
@@ -137,9 +138,9 @@ Output Formatting (human-readable or JSON)
 - `walkdir`: Directory traversal
 - `glob`: Pattern matching for excludes
 
-### Optional (for dependency cleaning)
-- `cargo-udeps` or `cargo-machete`: External tools for detecting unused dependencies
-- `cargo-remove`: External tool for removing dependencies
+### Optional (for dependency removal)
+- `cargo-remove` (from cargo-edit): External tool for removing dependencies
+- `toml`: For parsing Cargo.toml files (built-in dependency detection)
 
 ## Configuration
 

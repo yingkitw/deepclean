@@ -132,7 +132,7 @@ fn main() -> Result<()> {
             println!("{} DRY RUN MODE - no changes will be made", "[INFO]".yellow().bold());
         }
         if args.clean_deps {
-            println!("{} Dependency cleaning enabled (requires cargo-udeps or cargo-machete)", "[INFO]".blue().bold());
+            println!("{} Dependency cleaning enabled (native detection)", "[INFO]".blue().bold());
             if args.remove_deps {
                 println!("{} Will remove unused dependencies (requires cargo-remove)", "[INFO]".yellow().bold());
             }
