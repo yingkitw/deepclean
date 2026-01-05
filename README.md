@@ -52,6 +52,9 @@ cargo rclean --verbose
 
 # JSON output for scripting
 cargo rclean --json
+
+# Only clean projects above 100MB
+cargo rclean --min-size 100MB
 ```
 
 ### As a Standalone Binary
@@ -74,6 +77,7 @@ cargo rclean --help
 - `-j, --jobs <N>`: Number of parallel jobs (default: CPU count)
 - `-e, --exclude <PATTERN>`: Exclude glob patterns (can be specified multiple times)
 - `--dry-run`: Preview mode (doesn't actually clean)
+- `--min-size <SIZE>`: Only clean projects above this size threshold (e.g., "100MB", "1GB")
 - `-v, --verbose`: Verbose output
 - `--json`: Output results as JSON
 
