@@ -1,5 +1,4 @@
 use anyhow::Result;
-use cargo_metadata::MetadataCommand;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -7,89 +6,136 @@ use walkdir::WalkDir;
 #[derive(Debug, Clone)]
 pub struct Project {
     pub path: PathBuf,
+    #[allow(dead_code)]
     pub is_workspace: bool,
 }
 
-/// Find all Cargo projects in the given directory
+/// Cheap detection of a `[workspace]` table in a Cargo.toml manifest.
+///
+/// Looks only at table headers (lines of the form `[workspace]` or `[workspace.*]`),
+/// skipping comments. This avoids spawning `cargo metadata` for every manifest and
+/// every ancestor, which is the dominant cost in discovery.
+fn manifest_declares_workspace(content: &str) -> bool {
+    for raw in content.lines() {
+        let line = raw.trim_start();
+        if line.starts_with('#') {
+            continue;
+        }
+        if line == "[workspace]" || line.starts_with("[workspace.") {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_workspace_manifest(path: &Path) -> bool {
+    match std::fs::read_to_string(path) {
+        Ok(content) => manifest_declares_workspace(&content),
+        Err(_) => false,
+    }
+}
+
+/// Find all Cargo projects in the given directory.
+///
+/// A project's build output lives at its **workspace root** when it belongs to a
+/// workspace, otherwise at the project directory itself. We resolve this purely by
+/// scanning manifest files (no subprocesses), so discovery scales to large trees.
 pub fn find_cargo_projects(root: &Path, exclude_patterns: &[String]) -> Result<Vec<Project>> {
-    let mut projects = Vec::new();
-    let mut seen_workspaces = HashSet::new();
+    // Compile exclude patterns once instead of per directory entry.
+    let compiled_excludes: Vec<glob::Pattern> = exclude_patterns
+        .iter()
+        .filter_map(|p| glob::Pattern::new(p).ok())
+        .collect();
 
-    for entry in WalkDir::new(root)
-        .into_iter()
-        .filter_entry(|e| {
-            // Skip hidden directories and common exclusions
-            let name = e.file_name().to_string_lossy();
-            if name.starts_with('.') && name != "." && name != ".." {
-                return false;
+    // Collect every Cargo.toml, pruning hidden dirs and excluded paths early.
+    let mut manifests: Vec<PathBuf> = Vec::new();
+    let mut it = WalkDir::new(root).into_iter();
+    while let Some(res) = it.next() {
+        let entry = match res {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        if entry.depth() > 0 && entry.file_type().is_dir() {
+            let name = entry.file_name().to_string_lossy();
+
+            // Prune hidden directories (but allow the root itself).
+            if name.starts_with('.') {
+                it.skip_current_dir();
+                continue;
             }
 
-            // Check exclude patterns
-            for pattern in exclude_patterns {
-                if glob::Pattern::new(pattern)
-                    .ok()
-                    .and_then(|p| {
-                        e.path()
-                            .strip_prefix(root)
-                            .ok()
-                            .and_then(|rel| Some(p.matches(&rel.to_string_lossy())))
-                    })
-                    .unwrap_or(false)
-                {
-                    return false;
-                }
-            }
-            true
-        })
-    {
-        let entry = entry?;
-        if entry.file_name() == "Cargo.toml" {
-            let project_dir = entry.path().parent().unwrap().to_path_buf();
-
-            // Check if this is part of a workspace
-            let mut is_workspace_member = false;
-            let mut current = project_dir.parent();
-            while let Some(parent) = current {
-                let workspace_toml = parent.join("Cargo.toml");
-                if workspace_toml.exists() {
-                    // Try to parse as workspace
-                    if let Ok(metadata) = MetadataCommand::new()
-                        .manifest_path(&workspace_toml)
-                        .exec()
-                    {
-                        if metadata.workspace_root == parent {
-                            // This is a workspace member
-                            let workspace_path: PathBuf = metadata.workspace_root.into();
-                            if !seen_workspaces.contains(&workspace_path) {
-                                seen_workspaces.insert(workspace_path.clone());
-                                projects.push(Project {
-                                    path: workspace_path,
-                                    is_workspace: true,
-                                });
-                            }
-                            is_workspace_member = true;
-                            break;
-                        }
+            // Prune excluded directories.
+            if !compiled_excludes.is_empty() {
+                if let Ok(rel) = entry.path().strip_prefix(root) {
+                    let rel_str = rel.to_string_lossy();
+                    if compiled_excludes.iter().any(|p| p.matches(&rel_str)) {
+                        it.skip_current_dir();
+                        continue;
                     }
                 }
-                current = parent.parent();
             }
+        }
 
-            // If not a workspace member, add as standalone project
-            if !is_workspace_member {
-                projects.push(Project {
-                    path: project_dir,
-                    is_workspace: false,
-                });
+        if entry.file_name() == "Cargo.toml" && entry.file_type().is_file() {
+            if let Some(parent) = entry.path().parent() {
+                manifests.push(parent.to_path_buf());
             }
         }
     }
 
-    // Remove duplicates
-    projects.sort_by_key(|p| p.path.clone());
-    projects.dedup_by_key(|p| p.path.clone());
+    // Identify all workspace roots up front (one read per manifest, cached).
+    let workspace_roots: HashSet<PathBuf> = manifests
+        .iter()
+        .filter(|dir| is_workspace_manifest(&dir.join("Cargo.toml")))
+        .cloned()
+        .collect();
+
+    // For each manifest dir, resolve the nearest enclosing workspace root
+    // (including itself). Members resolve to their root; standalone projects
+    // resolve to themselves. Deduplicate on first encounter.
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut projects: Vec<Project> = Vec::new();
+
+    for dir in &manifests {
+        let target = nearest_workspace_root(dir, &workspace_roots);
+        match target {
+            Some(root_dir) => {
+                if seen.insert(root_dir.clone()) {
+                    projects.push(Project {
+                        path: root_dir,
+                        is_workspace: true,
+                    });
+                }
+            }
+            None => {
+                if seen.insert(dir.clone()) {
+                    projects.push(Project {
+                        path: dir.clone(),
+                        is_workspace: false,
+                    });
+                }
+            }
+        }
+    }
+
+    // Stable, deterministic ordering for output.
+    projects.sort_unstable_by(|a, b| a.path.cmp(&b.path));
 
     Ok(projects)
+}
+
+/// Walk up from `dir` to find the nearest ancestor (including `dir`) that is a
+/// workspace root. Pure path comparisons — no I/O.
+fn nearest_workspace_root(dir: &Path, roots: &HashSet<PathBuf>) -> Option<PathBuf> {
+    let mut current = Some(dir);
+    while let Some(d) = current {
+        if roots.contains(d) {
+            return Some(d.to_path_buf());
+        }
+        current = d.parent();
+    }
+    None
 }
 
 #[cfg(test)]
@@ -110,22 +156,50 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let project_dir = temp_dir.path().join("my-project");
         fs::create_dir(&project_dir).unwrap();
-        // Create a valid Cargo.toml with version
         fs::write(
             project_dir.join("Cargo.toml"),
-            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n"
-        ).unwrap();
-        // Create a dummy src/main.rs so cargo-metadata doesn't fail
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
         fs::create_dir(project_dir.join("src")).unwrap();
         fs::write(project_dir.join("src/main.rs"), "fn main() {}").unwrap();
 
         let projects = find_cargo_projects(temp_dir.path(), &[]).unwrap();
-        // Note: The test might find 0 or 1 depending on cargo-metadata behavior
-        // The important thing is it doesn't crash
-        assert!(projects.len() <= 1);
-        if projects.len() == 1 {
-            assert_eq!(projects[0].path, project_dir);
-        }
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].path, project_dir);
+        assert!(!projects[0].is_workspace);
+    }
+
+    #[test]
+    fn test_find_cargo_projects_workspace_collapse() {
+        // A workspace root plus a member should collapse into a single target.
+        let temp_dir = TempDir::new().unwrap();
+        let ws_root = temp_dir.path().join("ws");
+        let member = ws_root.join("member");
+        fs::create_dir_all(&member).unwrap();
+        fs::write(
+            ws_root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"member\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"member\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let projects = find_cargo_projects(temp_dir.path(), &[]).unwrap();
+        assert_eq!(projects.len(), 1, "workspace + member should collapse to one target");
+        assert_eq!(projects[0].path, ws_root);
+        assert!(projects[0].is_workspace);
+    }
+
+    #[test]
+    fn test_manifest_declares_workspace_ignores_comments() {
+        // A `[workspace]` that only appears in a comment must not count.
+        assert!(!manifest_declares_workspace("# [workspace]\n[dependencies]\nfoo = \"1\"\n"));
+        assert!(manifest_declares_workspace("[workspace]\nmembers = []\n"));
+        assert!(!manifest_declares_workspace("# this is [workspace]\n[package]\nname=\"x\"\n"));
+        assert!(!manifest_declares_workspace("[workspace-dependencies]\n"));
     }
 }
-

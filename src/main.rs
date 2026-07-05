@@ -82,7 +82,7 @@ fn main() -> Result<()> {
         .with_context(|| format!("Failed to canonicalize path: {:?}", args.directory))?;
 
     if !args.json {
-        println!("{} {}", "[INFO]".blue().bold(), format!("Starting cargo clean from: {:?}", root));
+        println!("{} Starting cargo clean from: {:?}", "[INFO]".blue().bold(), root);
         println!("{} Searching for Cargo projects...", "[INFO]".blue().bold());
     }
 
@@ -105,8 +105,9 @@ fn main() -> Result<()> {
     };
 
     let projects: Vec<_> = if let Some(min_bytes) = min_size_bytes {
+        // Filter in parallel: each size calculation is independent and I/O-bound.
         projects
-            .into_iter()
+            .par_iter()
             .filter(|project| {
                 let target_dir = project.path.join("target");
                 if target_dir.exists() {
@@ -115,6 +116,7 @@ fn main() -> Result<()> {
                     false
                 }
             })
+            .cloned()
             .collect()
     } else {
         projects
@@ -154,11 +156,9 @@ fn main() -> Result<()> {
         .with_min_len(1)
         .map(|project| {
             // Create individual progress bar for this project
-            let project_pb = if let Some(ref multi) = multi {
-                Some(create_project_progress_bar(multi, &project.path))
-            } else {
-                None
-            };
+            let project_pb = multi
+                .as_ref()
+                .map(|multi| create_project_progress_bar(multi, &project.path));
 
             if args.verbose && !args.json {
                 println!("{} Cleaning: {:?}", "[INFO]".blue().bold(), project.path);

@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use crate::project::Project;
 use colored::Colorize;
-use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use walkdir::WalkDir;
 
@@ -63,104 +62,77 @@ fn normalize_crate_name(name: &str) -> String {
     name.replace('-', "_")
 }
 
-/// Check if a dependency is used in the source code
-fn is_dependency_used(dep_name: &str, project_path: &Path) -> bool {
-    let normalized_dep = normalize_crate_name(dep_name);
-    let search_patterns = vec![
-        // Direct use statements
+/// Build the search patterns for a single dependency name.
+fn search_patterns_for(normalized_dep: &str) -> [String; 7] {
+    [
         format!("use {}::", normalized_dep),
         format!("use {};", normalized_dep),
         format!("use crate::{}", normalized_dep),
-        // In paths
         format!("{}::", normalized_dep),
-        // Extern crate (older style)
         format!("extern crate {}", normalized_dep),
-        // Macro invocations
         format!("{}!", normalized_dep),
-        // Attribute macros
         format!("#[{}", normalized_dep),
-    ];
-    
-    // Search in src/ directory
-    let src_dir = project_path.join("src");
-    if src_dir.exists() {
-        if search_in_directory(&src_dir, &search_patterns) {
-            return true;
-        }
-    }
-    
-    // Search in examples/ directory
-    let examples_dir = project_path.join("examples");
-    if examples_dir.exists() {
-        if search_in_directory(&examples_dir, &search_patterns) {
-            return true;
-        }
-    }
-    
-    // Search in tests/ directory
-    let tests_dir = project_path.join("tests");
-    if tests_dir.exists() {
-        if search_in_directory(&tests_dir, &search_patterns) {
-            return true;
-        }
-    }
-    
-    // Check build.rs
-    let build_rs = project_path.join("build.rs");
-    if build_rs.exists() {
-        if let Ok(content) = fs::read_to_string(&build_rs) {
-            for pattern in &search_patterns {
-                if content.contains(pattern) {
-                    return true;
-                }
-            }
-        }
-    }
-    
-    // Check Cargo.toml for feature flags or other references
-    let cargo_toml = project_path.join("Cargo.toml");
-    if let Ok(content) = fs::read_to_string(&cargo_toml) {
-        // Check if it's used in feature definitions or other places
-        // This is a simple check - might need refinement
-        let normalized = normalize_crate_name(dep_name);
-        if content.contains(&format!("{}/", dep_name)) 
-            || content.contains(&format!("{}-", dep_name))
-            || content.contains(&format!("{}/", normalized))
-            || content.contains(&format!("{}-", normalized)) {
-            return true;
-        }
-    }
-    
-    // Check for proc-macro usage (they're used via attributes, not imports)
-    // This is a heuristic - proc-macros are tricky
-    if dep_name.contains("proc-macro") || dep_name.contains("derive") {
-        // These are likely used even if not directly imported
-        // Be conservative and assume they're used
-        return true;
-    }
-    
-    false
+    ]
 }
 
-/// Search for patterns in a directory
-fn search_in_directory(dir: &Path, patterns: &[String]) -> bool {
-    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
-        if entry.file_type().is_file() {
-            let path = entry.path();
-            // Only check Rust files
-            if let Some(ext) = path.extension() {
-                if ext == "rs" {
-                    if let Ok(content) = fs::read_to_string(path) {
-                        for pattern in patterns {
-                            if content.contains(pattern) {
-                                return true;
-                            }
-                        }
-                    }
+/// Collect the text of every Rust source file relevant to usage detection,
+/// reading each file exactly once.
+fn collect_source_text(project_path: &Path) -> Vec<String> {
+    let mut contents: Vec<String> = Vec::new();
+
+    for sub in ["src", "examples", "tests"] {
+        let dir = project_path.join(sub);
+        if !dir.exists() {
+            continue;
+        }
+        for entry in WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
+            if entry.file_type().is_file()
+                && entry.path().extension().is_some_and(|e| e == "rs")
+            {
+                if let Ok(content) = fs::read_to_string(entry.path()) {
+                    contents.push(content);
                 }
             }
         }
     }
+
+    // build.rs (build dependencies)
+    let build_rs = project_path.join("build.rs");
+    if let Ok(content) = fs::read_to_string(&build_rs) {
+        contents.push(content);
+    }
+
+    contents
+}
+
+/// Check whether a dependency is referenced anywhere in the project sources or
+/// manifest. All files are already in `sources`; the manifest is checked for
+/// feature/alias references.
+fn is_dependency_used(
+    dep_name: &str,
+    sources: &[String],
+    cargo_toml_content: &str,
+) -> bool {
+    let normalized = normalize_crate_name(dep_name);
+    let patterns = search_patterns_for(&normalized);
+
+    for content in sources {
+        for pattern in &patterns {
+            if content.contains(pattern.as_str()) {
+                return true;
+            }
+        }
+    }
+
+    // Cargo.toml feature flags / crate references (e.g. "dep/", "crate-name/").
+    if cargo_toml_content.contains(&format!("{}/", dep_name))
+        || cargo_toml_content.contains(&format!("{}-", dep_name))
+        || cargo_toml_content.contains(&format!("{}/", normalized))
+        || cargo_toml_content.contains(&format!("{}-", normalized))
+    {
+        return true;
+    }
+
     false
 }
 
@@ -170,37 +142,48 @@ pub fn check_unused_dependencies(project: &Project) -> Result<Vec<UnusedDependen
     if !cargo_toml.exists() {
         return Ok(vec![]);
     }
-    
+
     let all_deps = extract_dependencies(&cargo_toml)?;
+
+    // Common dependencies that may be used indirectly (macros, build scripts,
+    // proc-macros). Skipped to avoid false positives. Allocated once.
+    const SKIP_LIST: &[&str] = &[
+        "proc-macro2",
+        "quote",
+        "syn",
+        "serde",
+        "serde_derive",
+        "serde_json", // Often used in build scripts
+    ];
+
+    // Filter to the dependencies we actually need to check.
+    let deps_to_check: Vec<(String, String)> = all_deps
+        .into_iter()
+        .filter(|(name, _)| {
+            !SKIP_LIST.contains(&name.as_str())
+                && !name.ends_with("_derive")
+                && !name.contains("proc-macro")
+        })
+        .collect();
+
+    if deps_to_check.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Read every relevant source file exactly once.
+    let sources = collect_source_text(&project.path);
+    let cargo_content = fs::read_to_string(&cargo_toml).unwrap_or_default();
+
     let mut unused = Vec::new();
-    
-    for (dep_name, location) in all_deps {
-        // Skip some common dependencies that might be used indirectly
-        // These are often used in macros, build scripts, or procedural macros
-        let skip_list = vec![
-            "proc-macro2",
-            "quote",
-            "syn",
-            "serde",
-            "serde_derive",
-            "serde_json", // Often used in build scripts
-        ];
-        
-        // Also skip if it's a proc-macro crate (they're used via attributes)
-        if skip_list.contains(&dep_name.as_str()) 
-            || dep_name.ends_with("_derive")
-            || dep_name.contains("proc-macro") {
-            continue;
-        }
-        
-        if !is_dependency_used(&dep_name, &project.path) {
+    for (dep_name, location) in deps_to_check {
+        if !is_dependency_used(&dep_name, &sources, &cargo_content) {
             unused.push(UnusedDependency {
                 name: dep_name,
                 location,
             });
         }
     }
-    
+
     Ok(unused)
 }
 
@@ -217,7 +200,7 @@ pub fn remove_unused_dependencies(
 
     // Check if cargo-remove is available first
     let check_output = Command::new("cargo")
-        .args(&["remove", "--help"])
+        .args(["remove", "--help"])
         .output();
     
     match check_output {

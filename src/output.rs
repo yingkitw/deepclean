@@ -60,21 +60,10 @@ pub fn create_project_progress_bar(
     pb
 }
 
-/// Print initial information
-pub fn print_start_info(root: &std::path::Path, project_count: usize, dry_run: bool) {
-    println!("{} {}", "[INFO]".blue().bold(), format!("Starting cargo clean from: {:?}", root));
-    println!("{} Searching for Cargo projects...", "[INFO]".blue().bold());
-    println!("{} Found {} project(s)", "[INFO]".blue().bold(), project_count);
-    if dry_run {
-        println!("{} DRY RUN MODE - no changes will be made", "[INFO]".yellow().bold());
-    }
-    println!();
-}
-
 /// Print summary
 pub fn print_summary(summary: &Summary) {
     println!();
-    println!("{} {}", "[INFO]".blue().bold(), "=== SUMMARY ===");
+    println!("{} === SUMMARY ===", "[INFO]".blue().bold());
     println!(
         "{} Successfully cleaned: {} project(s)",
         "[SUCCESS]".green().bold(),
