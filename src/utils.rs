@@ -76,6 +76,7 @@ pub fn parse_size(size_str: &str) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_format_bytes() {
@@ -95,6 +96,16 @@ mod tests {
         assert_eq!(parse_size("1GB").unwrap(), 1073741824);
         assert_eq!(parse_size("1.5MB").unwrap(), 1572864);
         assert!(parse_size("invalid").is_err());
+    }
+
+    #[test]
+    fn test_get_directory_size_with_files() {
+        let temp = tempfile::TempDir::new().unwrap();
+        fs::write(temp.path().join("a.txt"), "hello").unwrap();
+        fs::write(temp.path().join("b.txt"), "world!").unwrap();
+
+        let size = get_directory_size(temp.path()).unwrap();
+        assert_eq!(size, 11);
     }
 
     #[test]

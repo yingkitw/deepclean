@@ -52,7 +52,8 @@ pub fn clean_project(project: &Project, dry_run: bool, _verbose: bool) -> Result
                             success: false,
                             freed_bytes: 0,
                             error: Some(format!(
-                                "Failed to remove target directory {:?}: {}",
+                                "Failed to remove target directory {:?}: {}. \
+Try running `cargo clean` manually in this project, or check file permissions.",
                                 target_dir, e
                             )),
                         });
@@ -70,4 +71,62 @@ pub fn clean_project(project: &Project, dry_run: bool, _verbose: bool) -> Result
         freed_bytes,
         error: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rayon::prelude::*;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    fn write_project_with_target(base: &Path, sub: &str) {
+        let dir = base.join(sub);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{sub}\"\nversion = \"0.1.0\"\n"),
+        )
+        .unwrap();
+        fs::write(dir.join("src/main.rs"), "fn main() {}").unwrap();
+        fs::create_dir_all(dir.join("target/debug")).unwrap();
+        fs::write(dir.join("target/debug/artifact"), "build output").unwrap();
+    }
+
+    #[test]
+    fn test_parallel_clean_multiple_subfolder_projects() {
+        let temp = TempDir::new().unwrap();
+        let subs = ["services/api", "apps/web", "tools/cli"];
+        for sub in subs {
+            write_project_with_target(temp.path(), sub);
+        }
+
+        let projects: Vec<Project> = subs
+            .iter()
+            .map(|sub| Project {
+                path: temp.path().join(sub),
+                is_workspace: false,
+            })
+            .collect();
+
+        let results: Vec<CleanResult> = projects
+            .par_iter()
+            .map(|project| {
+                clean_project(project, false, false).expect("clean should not error")
+            })
+            .collect();
+
+        assert_eq!(results.len(), 3);
+        assert!(
+            results.iter().all(|r| r.success),
+            "every subfolder project should clean successfully"
+        );
+        for sub in subs {
+            assert!(
+                !temp.path().join(sub).join("target").exists(),
+                "target should be removed for {sub}"
+            );
+        }
+    }
 }

@@ -195,6 +195,50 @@ mod tests {
     }
 
     #[test]
+    fn test_find_multiple_subfolder_projects() {
+        let temp_dir = TempDir::new().unwrap();
+        for sub in ["services/api", "apps/web", "tools/cli"] {
+            let dir = temp_dir.path().join(sub);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("Cargo.toml"),
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+            )
+            .unwrap();
+        }
+
+        let projects = find_cargo_projects(temp_dir.path(), &[]).unwrap();
+        assert_eq!(projects.len(), 3);
+
+        let paths: Vec<_> = projects.iter().map(|p| p.path.clone()).collect();
+        assert!(paths.contains(&temp_dir.path().join("services/api")));
+        assert!(paths.contains(&temp_dir.path().join("apps/web")));
+        assert!(paths.contains(&temp_dir.path().join("tools/cli")));
+    }
+
+    #[test]
+    fn test_find_cargo_projects_exclude_pattern() {
+        let temp_dir = TempDir::new().unwrap();
+        let included = temp_dir.path().join("included");
+        let excluded = temp_dir.path().join("vendor").join("nested");
+        fs::create_dir_all(&excluded).unwrap();
+        fs::create_dir(&included).unwrap();
+
+        for dir in [&included, &excluded] {
+            fs::write(
+                dir.join("Cargo.toml"),
+                "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+            )
+            .unwrap();
+        }
+
+        let projects =
+            find_cargo_projects(temp_dir.path(), &["**/vendor".to_string()]).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].path, included);
+    }
+
+    #[test]
     fn test_manifest_declares_workspace_ignores_comments() {
         // A `[workspace]` that only appears in a comment must not count.
         assert!(!manifest_declares_workspace("# [workspace]\n[dependencies]\nfoo = \"1\"\n"));

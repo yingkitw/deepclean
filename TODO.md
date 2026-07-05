@@ -5,33 +5,33 @@
 ### Code Organization
 - [x] Create TODO.md
 - [x] Create ARCHITECTURE.md
-- [ ] Modularize code: Split main.rs into separate modules
-  - [ ] `src/project.rs` - Project discovery and workspace detection
-  - [ ] `src/cleaner.rs` - Cleaning logic
-  - [ ] `src/output.rs` - Output formatting and display
-  - [ ] `src/utils.rs` - Utility functions (format_bytes, get_directory_size)
-  - [ ] `src/config.rs` - Configuration file support
+- [x] Modularize code: Split main.rs into separate modules
+  - [x] `src/project.rs` - Project discovery and workspace detection
+  - [x] `src/cleaner.rs` - Cleaning logic
+  - [x] `src/output.rs` - Output formatting and display
+  - [x] `src/utils.rs` - Utility functions (format_bytes, get_directory_size)
+  - [x] `src/config.rs` - Configuration file support
 
 ### Testing
-- [ ] Add unit tests for core functionality
-  - [ ] Test project discovery
-  - [ ] Test workspace detection
-  - [ ] Test size calculation
-  - [ ] Test byte formatting
-  - [ ] Test exclude pattern matching
+- [x] Add unit tests for core functionality
+  - [x] Test project discovery
+  - [x] Test workspace detection
+  - [x] Test size calculation
+  - [x] Test byte formatting
+  - [x] Test exclude pattern matching
 
 ### Features
-- [ ] Add configuration file support (`.deepclean.toml`)
-  - [ ] Default exclude patterns
-  - [ ] Default job count
-  - [ ] Default output format preferences
-- [ ] Add interactive confirmation mode (`--interactive` flag)
+- [x] Add configuration file support (`.deepclean.toml`)
+  - [x] Default exclude patterns
+  - [x] Default job count
+  - [x] Default output format preferences
+- [x] Add interactive confirmation mode (`--interactive` flag)
 - [x] Add `--min-size` flag to only clean projects above threshold
-- [ ] Add `--clean-deps` flag to detect and remove unused dependencies
-  - [ ] Detect unused dependencies using cargo-udeps or cargo-machete
-  - [ ] Report unused dependencies
-  - [ ] Optionally remove them (with confirmation)
-- [ ] Improve error messages with context and suggestions
+- [x] Add `--clean-deps` flag to detect and remove unused dependencies
+  - [x] Detect unused dependencies using native Cargo.toml + source analysis
+  - [x] Report unused dependencies
+  - [x] Optionally remove them (with confirmation via `--remove-deps`)
+- [x] Improve error messages with context and suggestions
 
 ## Medium Priority
 
@@ -46,7 +46,7 @@
 - [ ] Add `--keep` flag to preserve certain build artifacts
 - [ ] Add `--only-workspaces` flag to only clean workspace roots
 - [ ] Add `--only-standalone` flag to only clean standalone projects
-- [ ] Add color support detection (auto-disable on non-TTY)
+- [x] Add color support detection (auto-disable on non-TTY)
 
 ### Code Quality
 - [ ] Add proper logging framework (tracing or log crate)
@@ -77,4 +77,3 @@
 - [ ] Statistics tracking (how much space saved over time)
 - [ ] Web UI for monitoring cleaning operations
 - [ ] Support for remote cleaning (SSH)
-
