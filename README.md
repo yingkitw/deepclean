@@ -1,157 +1,224 @@
-# deepclean 🧹
+# deepclean 🧹 — Fast Rust Cache Cleaner & Disk Space Recovery
 
-> A fast, parallel tool to clean Rust projects and remove unused dependencies
+**deepclean** is a fast, parallel command-line tool written in Rust that reclaims disk space by cleaning Cargo `target/` build directories, removing unused dependencies, and clearing global toolchain caches (npm, Bun, cargo, pip, uv, Homebrew, HuggingFace, Playwright, Puppeteer, and more).
+
+It works as a `cargo` subcommand (`cargo deepclean`) and scans your projects in parallel across all CPU cores, so cleaning dozens of repositories takes seconds instead of minutes.
+
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/yingkitw/deepclean)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org/)
 
 ## Why deepclean?
 
-Rust projects can accumulate gigabytes of build artifacts in `target/` directories. When you have multiple projects or workspaces, manually cleaning them is tedious and time-consuming. Plus, unused dependencies bloat your `Cargo.toml` and slow down builds.
+Rust projects accumulate **gigabytes** of build artifacts in `target/` directories. A single workspace can consume 5–10 GB; a folder of projects can eat 50+ GB. On top of that, global toolchain caches (npm's `_cacache`, Bun's install cache, HuggingFace model weights, Playwright browsers) silently grow to tens of gigabytes over months of development.
 
-**deepclean solves this by:**
-- 🚀 **Cleaning multiple projects in parallel** - Save time with concurrent cleaning
-- 🎯 **Smart workspace detection** - Automatically finds all Cargo projects
-- 🧹 **Removes unused dependencies** - Keep your `Cargo.toml` clean
-- ⚡ **Fast and efficient** - Built in Rust for maximum performance
+**deepclean solves three problems at once:**
+
+- 🚀 **Parallel Cargo cleaning** — removes `target/` directories across many projects simultaneously, using all CPU cores.
+- 🧹 **Unused dependency removal** — detects and optionally removes dependencies in `Cargo.toml` that your source code no longer uses, speeding up builds.
+- 💾 **Global cache cleaning** — lists npm, Bun, cargo, pip, uv, Homebrew, HuggingFace, and other caches with estimated reclaimable sizes, then lets you interactively pick which to clean.
 
 ## Quick Start
 
-### Installation
+### Install
 
 ```bash
-# Clone the repository
+# From source (recommended for latest features)
 git clone https://github.com/yingkitw/deepclean.git
 cd deepclean
-
-# Install as a cargo plugin
 cargo install --path .
 
-# Now use it!
-cargo deepclean
+# Or directly from the repository
+cargo install --git https://github.com/yingkitw/deepclean.git
 ```
 
-**Note:** Make sure `~/.cargo/bin` is in your PATH.
+> **Note:** Ensure `~/.cargo/bin` is on your `PATH` so the `cargo deepclean` subcommand is found.
 
-### Basic Usage
+### First run
 
 ```bash
-# Clean current directory and all subdirectories
+# Clean target/ directories in the current folder and all subfolders
 cargo deepclean
 
-# Clean a specific directory
-cargo deepclean /path/to/projects
-
-# Preview what would be cleaned (dry run)
+# Preview what would be cleaned (no deletion)
 cargo deepclean --dry-run
-
-# Only clean projects above 100MB
-cargo deepclean --min-size 100MB
-
-# Check for unused dependencies
-cargo deepclean --clean-deps
-
-# Remove unused dependencies (automatically checks first)
-cargo deepclean --remove-deps
 ```
 
 ## Features
 
-- ✅ **Parallel processing** - Clean multiple projects simultaneously
-- ✅ **Smart detection** - Uses cargo-metadata for accurate workspace detection
-- ✅ **Dependency cleaning** - Find and remove unused dependencies (built-in detection)
-- ✅ **Size filtering** - Only clean projects above a certain size
-- ✅ **Progress bars** - See what's being cleaned in real-time
-- ✅ **Dry-run mode** - Preview changes before applying them
-- ✅ **Exclude patterns** - Skip specific directories
-- ✅ **JSON output** - Machine-readable output for automation
+### Cargo project cleaning
 
-## Options
+- ✅ **Parallel processing** — cleans multiple projects simultaneously across all CPU cores
+- ✅ **Smart workspace detection** — uses `cargo-metadata` to find and collapse workspaces accurately
+- ✅ **Size filtering** — `--min-size 100MB` cleans only projects above a threshold
+- ✅ **Exclude patterns** — skip directories with glob patterns (`-e "**/node_modules"`)
+- ✅ **Dry-run mode** — preview exactly what would be cleaned before deleting
+- ✅ **Progress bars** — real-time progress via `indicatif`
+- ✅ **JSON output** — machine-readable results for scripts and CI
+
+### Unused dependency detection
+
+- ✅ **Built-in detection** — parses `Cargo.toml` and scans source code; no external tools required
+- ✅ **Report mode** — `--clean-deps` lists unused dependencies
+- ✅ **Auto-remove** — `--remove-deps` removes them (requires `cargo-edit`)
+
+### Global toolchain cache cleaning (new)
+
+- ✅ **Discovers 16+ caches** — npm, Bun, pnpm, Yarn, cargo registry, pip, uv, Poetry, Homebrew, HuggingFace, PyTorch, Puppeteer, Playwright, go-build, codex-runtimes
+- ✅ **Estimated sizes** — shows reclaimable disk space per cache, computed in parallel
+- ✅ **Risk tagging** — each cache is marked **safe** (re-fetches on demand) or **heavy** (re-download required, e.g. model weights or browser binaries)
+- ✅ **Interactive selection** — pick caches by number, type `all`, or `q` to quit
+- ✅ **Dry-run and JSON** — preview without deleting, or emit JSON for automation
+
+## CLI Options
 
 | Option | Description |
 |--------|-------------|
+| `[DIRECTORY]` | Directory to start cleaning from (default: `.`) |
 | `-j, --jobs <N>` | Number of parallel jobs (default: CPU count) |
-| `-e, --exclude <PATTERN>` | Exclude directories matching pattern (can use multiple times) |
-| `--dry-run` | Preview mode (doesn't actually clean) |
-| `--min-size <SIZE>` | Only clean projects above this size (e.g., "100MB", "1GB") |
-| `--clean-deps` | Check for unused dependencies |
-| `--remove-deps` | Remove unused dependencies (requires `cargo-remove`) |
+| `-e, --exclude <PATTERN>` | Exclude directories matching a glob pattern (repeatable) |
+| `--dry-run` | Preview mode — no changes are made |
+| `--min-size <SIZE>` | Only clean projects above this size (e.g. `100MB`, `1GB`) |
+| `--clean-deps` | Detect and report unused dependencies |
+| `--remove-deps` | Remove unused dependencies (requires `cargo-edit`) |
+| `--caches` | List global toolchain caches and interactively select which to clean |
+| `--interactive` | Prompt for confirmation before cleaning projects |
 | `-v, --verbose` | Verbose output |
 | `--json` | Output results as JSON |
+| `-h, --help` | Print help |
 
-## Requirements
+## Usage Examples
 
-- Rust toolchain
-- Cargo
-
-### Optional: Dependency Removal
-
-To remove unused dependencies, install `cargo-edit`:
+### Clean all Cargo projects in a directory tree
 
 ```bash
-cargo install cargo-edit
+cargo deepclean /path/to/projects
 ```
 
-**Note:** Dependency detection is built-in and doesn't require external tools! The tool parses `Cargo.toml` and searches your source code to find unused dependencies.
-
-## Examples
-
-### Clean Everything
-
-```bash
-cargo deepclean
-```
-
-### Clean Only Large Projects
+### Clean only large projects (above 500 MB)
 
 ```bash
 cargo deepclean --min-size 500MB
 ```
 
-### Find Unused Dependencies
+### Preview without deleting (dry run)
 
 ```bash
-cargo deepclean --clean-deps
+cargo deepclean --dry-run
 ```
 
-### Remove Unused Dependencies
+### Find and remove unused dependencies
 
 ```bash
+# Detect only
+cargo deepclean --clean-deps
+
+# Detect and remove (requires cargo-edit)
 cargo deepclean --remove-deps
 ```
 
-### Exclude Specific Directories
+### Exclude specific directories
 
 ```bash
 cargo deepclean --exclude "**/target/debug" --exclude "**/node_modules"
 ```
 
-### Parallel Cleaning with Custom Jobs
+### Limit parallelism
 
 ```bash
 cargo deepclean -j 8
 ```
 
+### Clean global toolchain caches
+
+Beyond per-project `target/` directories, dev toolchains accumulate large global caches. `--caches` discovers them, shows their sizes, and lets you interactively pick which to clean:
+
+```bash
+# Interactive: pick caches by number, 'all', or 'q' to quit
+cargo deepclean --caches
+
+# Preview without deleting
+cargo deepclean --caches --dry-run
+
+# Machine-readable list of discovered caches (JSON array)
+cargo deepclean --caches --json
+```
+
+Each cache is tagged **safe** (pure download cache that re-fetches on demand) or **heavy** (model weights, browser binaries, or runtimes that must re-download). Caches are removed with `rm -rf` and regenerated automatically by their tools on next use.
+
+#### Supported caches
+
+| Category | Caches |
+|----------|--------|
+| Rust | cargo registry cache, cargo registry src |
+| Python | pip, uv, Poetry |
+| JS/TS | npm (`_cacache` + `_npx`), Bun, pnpm, Yarn |
+| Other | Homebrew, Puppeteer, Playwright, HuggingFace, PyTorch models, go-build, codex-runtimes |
+
+### JSON output for automation and CI
+
+```bash
+cargo deepclean --json
+cargo deepclean --caches --json
+```
+
 ## How It Works
 
-1. **Discovery**: Recursively finds all Cargo projects using `cargo-metadata`
-2. **Filtering**: Optionally filters by size or exclude patterns
-3. **Cleaning**: Removes `target/` directories in parallel
-4. **Dependency Analysis**: Parses `Cargo.toml` and searches source code for unused dependencies
-5. **Removal**: Uses `cargo-remove` to clean up unused dependencies
+1. **Discovery** — recursively finds all `Cargo.toml` files using `walkdir` and resolves workspaces with `cargo-metadata`.
+2. **Filtering** — applies exclude patterns and optional `--min-size` threshold.
+3. **Cleaning** — removes `target/` directories in parallel via `rayon`; falls back to direct `rm -rf` if `cargo clean` fails.
+4. **Dependency analysis** — parses `Cargo.toml` and scans `src/`, `examples/`, `tests/`, and `build.rs` for dependency usage; reports or removes unused crates.
+5. **Cache cleaning** (`--caches`) — scans known global cache locations, computes sizes in parallel, presents an interactive selection, and removes chosen caches.
+
+## Requirements
+
+- **Rust toolchain** and **Cargo** (for installation and project cleaning)
+- **Optional:** [`cargo-edit`](https://github.com/killercup/cargo-edit) for `--remove-deps` (detection works without it)
+
+```bash
+cargo install cargo-edit
+```
 
 ## Performance
 
 deepclean is built in Rust for maximum performance:
-- Parallel execution across all CPU cores
-- Efficient directory traversal
-- Minimal memory footprint
+
+- **Parallel execution** across all CPU cores via `rayon`'s work-stealing scheduler
+- **Efficient directory traversal** with `walkdir` and early pruning of hidden/excluded dirs
+- **Parallel size calculation** for global cache discovery
+- **Minimal memory footprint** — streams results rather than buffering
+
+## FAQ
+
+### Is deepclean safe to use?
+
+Yes. `--dry-run` previews every change without deleting anything. Project cleaning removes only `target/` directories (regenerated by the next `cargo build`). Cache cleaning removes only the listed cache directories, which tools re-create on next use. The `--interactive` flag adds a confirmation prompt before cleaning projects.
+
+### Does deepclean modify my source code?
+
+Only when you explicitly pass `--remove-deps`, which edits `Cargo.toml` to remove unused dependencies. Without that flag, deepclean only deletes `target/` directories and (with `--caches`) global cache directories.
+
+### How is deepclean different from `cargo clean`?
+
+`cargo clean` cleans a single project. deepclean finds and cleans **all** projects in a directory tree in parallel, detects unused dependencies, and cleans global toolchain caches — none of which `cargo clean` does.
+
+### Which caches does `--caches` support?
+
+npm, Bun, pnpm, Yarn, cargo registry, pip, uv, Poetry, Homebrew, Puppeteer, Playwright, HuggingFace, PyTorch, go-build, and codex-runtimes. See the [Supported caches](#supported-caches) table above.
+
+### Can I use deepclean in CI?
+
+Yes. Use `--json` for machine-readable output and `--dry-run` for safe previews. The exit code is non-zero if any cleaning operation fails.
 
 ## Contributing
 
-Contributions are welcome! Feel free to open issues or submit pull requests.
+Contributions are welcome! Please open issues or submit pull requests at [github.com/yingkitw/deepclean](https://github.com/yingkitw/deepclean).
 
 ## License
 
 Apache-2.0
 
-## Repository
+## Links
 
-https://github.com/yingkitw/deepclean
+- **Repository:** [github.com/yingkitw/deepclean](https://github.com/yingkitw/deepclean)
+- **Documentation:** [docs.rs/deepclean](https://docs.rs/deepclean)
+- **Crates.io:** [crates.io/crates/deepclean](https://crates.io/crates/deepclean)

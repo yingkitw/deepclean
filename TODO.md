@@ -31,6 +31,14 @@
   - [x] Detect unused dependencies using native Cargo.toml + source analysis
   - [x] Report unused dependencies
   - [x] Optionally remove them (with confirmation via `--remove-deps`)
+- [x] Add `--caches` flag to list and interactively clean global toolchain caches
+  - [x] Discover caches (npm, bun, cargo, pip, uv, homebrew, huggingface, torch, puppeteer, playwright, go-build, codex-runtimes)
+  - [x] Show estimated reclaimable space per cache
+  - [x] Interactive multi-select (numbers, 'all', 'q')
+  - [x] Risk tagging (safe vs heavy) and notes
+  - [x] JSON output mode for automation
+  - [x] Dry-run support
+- [x] Fix `cargo deepclean <flags>` swallowing the first flag as the binary name
 - [x] Improve error messages with context and suggestions
 
 ## Medium Priority
@@ -77,3 +85,6 @@
 - [ ] Statistics tracking (how much space saved over time)
 - [ ] Web UI for monitoring cleaning operations
 - [ ] Support for remote cleaning (SSH)
+- [ ] `--caches --all` non-interactive flag to clean all safe caches without prompting
+- [ ] Configurable cache registry via `.deepclean.toml` (custom paths, exclusions)
+- [ ] Use tool-native clean commands (e.g. `npm cache clean`, `brew cleanup`) where they clean more than `rm -rf`

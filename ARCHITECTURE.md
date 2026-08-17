@@ -55,11 +55,20 @@
 - Merges CLI args with config
 - Validates configuration
 
+### 8. Global Cache Cleaning (`src/caches.rs`)
+- Discovers global toolchain caches (npm, bun, cargo registry, pip, uv, Homebrew, HuggingFace, torch, Puppeteer, Playwright, go-build, codex-runtimes)
+- Computes reclaimable sizes in parallel
+- Tags each cache as `safe` (download cache) or `heavy` (re-download required)
+- Interactive multi-select prompt; `--json` emits the discovered list for automation
+- Removes selected caches with `rm -rf` (tools regenerate on next use)
+
 ## Data Flow
 
 ```
 User Input (CLI args)
     ↓
+[if --caches] Cache Discovery + Interactive Select → Cache Cleaning → Summary
+    ↓ (otherwise)
 Config Loading (if .deepclean.toml exists)
     ↓
 Project Discovery (walkdir + cargo-metadata)

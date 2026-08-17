@@ -1,3 +1,4 @@
+mod caches;
 mod cleaner;
 mod config;
 mod deps;
@@ -62,6 +63,11 @@ struct Args {
     /// Prompt for confirmation before cleaning
     #[arg(long)]
     interactive: bool,
+
+    /// List global toolchain caches (npm, bun, cargo, pip, etc.) with estimated
+    /// sizes and interactively select which to clean
+    #[arg(long)]
+    caches: bool,
 }
 
 fn parse_args() -> Args {
@@ -70,7 +76,13 @@ fn parse_args() -> Args {
 
     let first_arg = args_iter.next();
     if first_arg.as_deref() == Some("deepclean") {
-        Args::parse_from(args_iter)
+        // Invoked as `cargo deepclean ...`: clap's `parse_from` treats the
+        // first element as argv[0], so re-prepend the program name before the
+        // remaining flags. Without this, the first flag would be swallowed as
+        // the binary name.
+        let prog = program_name.unwrap_or_else(|| "cargo-deepclean".to_string());
+        let rest: Vec<String> = std::iter::once(prog).chain(args_iter).collect();
+        Args::parse_from(rest)
     } else {
         let mut all_args = vec![program_name.unwrap_or_else(|| "cargo-deepclean".to_string())];
         if let Some(arg) = first_arg {
@@ -122,6 +134,10 @@ fn confirm_interactive(projects: &[project::Project], dry_run: bool) -> Result<b
 
 fn main() -> Result<()> {
     let args = parse_args();
+
+    if args.caches {
+        return caches::run_cache_mode(args.dry_run, args.json);
+    }
 
     let config = load_config(&args.directory)
         .context("Failed to load configuration. Check .deepclean.toml syntax and permissions.")?;

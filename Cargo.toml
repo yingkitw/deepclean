@@ -1,11 +1,15 @@
 [package]
 name = "deepclean"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
-description = "A fast, parallel tool to clean Rust projects and remove unused dependencies"
+description = "Fast, parallel Rust tool to clean Cargo target/ directories, remove unused dependencies, and free disk space from global toolchain caches (npm, Bun, cargo, pip, uv, Homebrew, HuggingFace, and more)"
 license = "Apache-2.0"
 authors = ["Ying Kit WONG"]
 repository = "https://github.com/yingkitw/deepclean.git"
+documentation = "https://docs.rs/deepclean"
+homepage = "https://github.com/yingkitw/deepclean"
+keywords = ["cargo", "clean", "rust", "disk-space", "cache"]
+categories = ["command-line-utilities", "development-tools::cargo-plugins", "filesystem"]
 
 [[bin]]
 name = "cargo-deepclean"
