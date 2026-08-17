@@ -340,4 +340,199 @@ tempfile = "3.0"
         assert!(dep_names.contains(&"serde".to_string()));
         assert!(dep_names.contains(&"tokio".to_string()));
     }
+
+    #[test]
+    fn test_extract_dependencies_includes_build_deps() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+
+[build-dependencies]
+cc = "1.0"
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_dependencies(&cargo_toml).unwrap();
+        let names: Vec<String> = deps.iter().map(|(n, _)| n.clone()).collect();
+        assert!(names.contains(&"cc".to_string()));
+        let cc_loc = deps
+            .iter()
+            .find(|(n, _)| n == "cc")
+            .map(|(_, l)| l.as_str())
+            .unwrap();
+        assert_eq!(cc_loc, "[build-dependencies]");
+    }
+
+    #[test]
+    fn test_is_dependency_used_with_use_statement() {
+        let sources = vec!["use serde::Deserialize;".to_string()];
+        assert!(is_dependency_used("serde", &sources, ""));
+    }
+
+    #[test]
+    fn test_is_dependency_used_unused() {
+        let sources = vec!["fn main() {}".to_string()];
+        assert!(!is_dependency_used("serde", &sources, ""));
+    }
+
+    #[test]
+    fn test_is_dependency_used_dash_underscore_normalization() {
+        // Crate name "serde-json" should match `use serde_json::`
+        let sources = vec!["use serde_json::Value;".to_string()];
+        assert!(is_dependency_used("serde-json", &sources, ""));
+    }
+
+    #[test]
+    fn test_is_dependency_used_macro_invocation() {
+        let sources = vec!["println!(\"hi\");".to_string()];
+        assert!(is_dependency_used("println", &sources, ""));
+    }
+
+    #[test]
+    fn test_is_dependency_used_attribute() {
+        let sources = vec!["#[derive(Debug)]".to_string()];
+        assert!(is_dependency_used("derive", &sources, ""));
+    }
+
+    #[test]
+    fn test_is_dependency_used_cargo_feature_reference() {
+        // Dependency referenced in Cargo.toml via "crate-name/feature" pattern
+        let sources = vec!["fn main() {}".to_string()];
+        let cargo = r#"[features]
+feat1 = ["some-crate/feature"]
+"#;
+        assert!(is_dependency_used("some-crate", &sources, cargo));
+    }
+
+    #[test]
+    fn test_check_unused_dependencies_finds_unused() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+rayon = "1.0"
+"#,
+        )
+        .unwrap();
+        // rayon is never used in source
+        fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        let project = crate::project::Project {
+            path: temp_dir.path().to_path_buf(),
+            is_workspace: false,
+        };
+        let unused = check_unused_dependencies(&project).unwrap();
+        let names: Vec<String> = unused.iter().map(|d| d.name.clone()).collect();
+        assert!(
+            names.contains(&"rayon".to_string()),
+            "rayon should be detected as unused, got: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_check_unused_dependencies_no_false_positive_for_used() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+rayon = "1.0"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            temp_dir.path().join("src/main.rs"),
+            "use rayon::prelude::*;\nfn main() {}",
+        )
+        .unwrap();
+
+        let project = crate::project::Project {
+            path: temp_dir.path().to_path_buf(),
+            is_workspace: false,
+        };
+        let unused = check_unused_dependencies(&project).unwrap();
+        let names: Vec<String> = unused.iter().map(|d| d.name.clone()).collect();
+        assert!(
+            !names.contains(&"rayon".to_string()),
+            "rayon is used and should not be flagged as unused"
+        );
+    }
+
+    #[test]
+    fn test_check_unused_dependencies_skips_skip_list() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+serde_derive = "1.0"
+"#,
+        )
+        .unwrap();
+        // Neither serde nor serde_derive is used in source, but both are in the skip list
+        fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        let project = crate::project::Project {
+            path: temp_dir.path().to_path_buf(),
+            is_workspace: false,
+        };
+        let unused = check_unused_dependencies(&project).unwrap();
+        let names: Vec<String> = unused.iter().map(|d| d.name.clone()).collect();
+        assert!(
+            !names.contains(&"serde".to_string()),
+            "serde is in skip list and should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_collect_source_text_includes_build_rs() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        fs::create_dir_all(temp_dir.path().join("examples")).unwrap();
+        fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+        fs::write(
+            temp_dir.path().join("examples/demo.rs"),
+            "fn main() {}",
+        )
+        .unwrap();
+        fs::write(temp_dir.path().join("build.rs"), "fn main() {}").unwrap();
+
+        let texts = collect_source_text(temp_dir.path());
+        // src/main.rs + examples/demo.rs + build.rs = 3 files
+        assert_eq!(texts.len(), 3);
+    }
+
+    #[test]
+    fn test_collect_source_text_empty_project() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let texts = collect_source_text(temp_dir.path());
+        assert!(texts.is_empty());
+    }
 }

@@ -129,4 +129,61 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_clean_project_dry_run_preserves_target() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().join("proj");
+        write_project_with_target(temp.path(), "proj");
+
+        let project = Project {
+            path: dir.clone(),
+            is_workspace: false,
+        };
+        let result = clean_project(&project, true, false).unwrap();
+        assert!(result.success);
+        assert!(result.freed_bytes > 0, "dry run should report size that would be freed");
+        assert!(
+            dir.join("target").exists(),
+            "dry run must not delete target"
+        );
+    }
+
+    #[test]
+    fn test_clean_project_no_target_already_clean() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().join("clean_proj");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"clean_proj\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(dir.join("src/main.rs"), "fn main() {}").unwrap();
+        // No target/ directory created
+
+        let project = Project {
+            path: dir.clone(),
+            is_workspace: false,
+        };
+        let result = clean_project(&project, false, false).unwrap();
+        assert!(result.success);
+        assert_eq!(result.freed_bytes, 0, "no target means 0 bytes freed");
+    }
+
+    #[test]
+    fn test_clean_project_removes_target() {
+        let temp = TempDir::new().unwrap();
+        write_project_with_target(temp.path(), "single");
+        let dir = temp.path().join("single");
+
+        let project = Project {
+            path: dir.clone(),
+            is_workspace: false,
+        };
+        let result = clean_project(&project, false, false).unwrap();
+        assert!(result.success);
+        assert!(result.freed_bytes > 0);
+        assert!(!dir.join("target").exists());
+    }
 }

@@ -90,7 +90,7 @@ pub fn resolve_settings(
 
     let jobs = cli_jobs
         .or_else(|| defaults.and_then(|d| d.jobs))
-        .unwrap_or_else(num_cpus::get);
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
 
     let min_size = cli_min_size
         .map(str::to_string)

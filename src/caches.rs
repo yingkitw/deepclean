@@ -507,4 +507,119 @@ mod tests {
         assert!(results[0].success);
         assert!(dir.exists(), "dry run should not delete");
     }
+
+    #[test]
+    fn test_clean_caches_multiple_paths() {
+        let temp = TempDir::new().unwrap();
+        let dir1 = temp.path().join("cache1");
+        let dir2 = temp.path().join("cache2");
+        fs::create_dir_all(&dir1).unwrap();
+        fs::create_dir_all(&dir2).unwrap();
+        fs::write(dir1.join("a"), "aaa").unwrap();
+        fs::write(dir2.join("b"), "bbbbbb").unwrap();
+        let size = get_directory_size(&dir1).unwrap() + get_directory_size(&dir2).unwrap();
+
+        let entry = CacheEntry {
+            id: "multi".into(),
+            name: "multi".into(),
+            category: "Test".into(),
+            risk: "safe".into(),
+            paths: vec![dir1.clone(), dir2.clone()],
+            size_bytes: size,
+            note: None,
+        };
+        let results = clean_caches(&[entry], false);
+        assert!(results[0].success);
+        assert_eq!(results[0].freed_bytes, size);
+        assert!(!dir1.exists());
+        assert!(!dir2.exists());
+    }
+
+    #[test]
+    fn test_clean_caches_nonexistent_paths_succeeds() {
+        let entry = CacheEntry {
+            id: "ghost".into(),
+            name: "ghost".into(),
+            category: "Test".into(),
+            risk: "safe".into(),
+            paths: vec![PathBuf::from("/nonexistent/path/that/does/not/exist")],
+            size_bytes: 100,
+            note: None,
+        };
+        let results = clean_caches(&[entry], false);
+        assert!(results[0].success, "non-existent paths should not cause failure");
+    }
+
+    #[test]
+    fn test_clean_caches_empty_entries() {
+        let results = clean_caches(&[], false);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_registry_risk_values_valid() {
+        let reg = build_registry();
+        for entry in &reg {
+            assert!(
+                entry.risk == "safe" || entry.risk == "heavy",
+                "entry {} has invalid risk: {}",
+                entry.id,
+                entry.risk
+            );
+        }
+    }
+
+    #[test]
+    fn test_registry_unique_ids() {
+        let reg = build_registry();
+        let mut ids: Vec<&str> = reg.iter().map(|e| e.id.as_str()).collect();
+        ids.sort();
+        let len_before = ids.len();
+        ids.dedup();
+        assert_eq!(
+            ids.len(),
+            len_before,
+            "registry has duplicate cache IDs"
+        );
+    }
+
+    #[test]
+    fn test_registry_all_categories_nonempty() {
+        let reg = build_registry();
+        for entry in &reg {
+            assert!(!entry.category.is_empty(), "entry {} has empty category", entry.id);
+            assert!(!entry.name.is_empty(), "entry {} has empty name", entry.id);
+        }
+    }
+
+    #[test]
+    fn test_remove_path_on_file() {
+        let temp = TempDir::new().unwrap();
+        let file = temp.path().join("single_file");
+        fs::write(&file, "data").unwrap();
+        assert!(file.is_file());
+        remove_path(&file).unwrap();
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn test_remove_path_nonexistent_is_ok() {
+        let result = remove_path(Path::new("/nonexistent/path"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_selection_all_tokens() {
+        assert_eq!(parse_selection("1,2,3,4,5", 5), vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_parse_selection_mixed_separators() {
+        assert_eq!(parse_selection("1, 2 3", 5), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_parse_selection_empty() {
+        assert!(parse_selection("", 5).is_empty());
+    }
 }

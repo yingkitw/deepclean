@@ -246,4 +246,99 @@ mod tests {
         assert!(!manifest_declares_workspace("# this is [workspace]\n[package]\nname=\"x\"\n"));
         assert!(!manifest_declares_workspace("[workspace-dependencies]\n"));
     }
+
+    #[test]
+    fn test_hidden_directories_pruned() {
+        // A Cargo.toml inside a hidden directory (e.g. .git) should not be found.
+        let temp_dir = TempDir::new().unwrap();
+        let hidden = temp_dir.path().join(".hidden");
+        fs::create_dir_all(&hidden).unwrap();
+        fs::write(
+            hidden.join("Cargo.toml"),
+            "[package]\nname = \"hidden\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let projects = find_cargo_projects(temp_dir.path(), &[]).unwrap();
+        assert_eq!(projects.len(), 0, "hidden directories should be pruned");
+    }
+
+    #[test]
+    fn test_nearest_workspace_root_direct() {
+        let mut roots = HashSet::new();
+        roots.insert(PathBuf::from("/projects/ws"));
+        assert_eq!(
+            nearest_workspace_root(Path::new("/projects/ws"), &roots),
+            Some(PathBuf::from("/projects/ws"))
+        );
+    }
+
+    #[test]
+    fn test_nearest_workspace_root_ancestor() {
+        let mut roots = HashSet::new();
+        roots.insert(PathBuf::from("/projects/ws"));
+        assert_eq!(
+            nearest_workspace_root(Path::new("/projects/ws/member"), &roots),
+            Some(PathBuf::from("/projects/ws"))
+        );
+    }
+
+    #[test]
+    fn test_nearest_workspace_root_none() {
+        let roots = HashSet::new();
+        assert_eq!(
+            nearest_workspace_root(Path::new("/projects/standalone"), &roots),
+            None
+        );
+    }
+
+    #[test]
+    fn test_find_cargo_projects_nested_workspace() {
+        // A workspace root with a member that is itself a workspace: both are
+        // independent workspace roots, so both are discovered as separate
+        // projects (each has its own target/ dir).
+        let temp_dir = TempDir::new().unwrap();
+        let outer = temp_dir.path().join("outer");
+        let inner = outer.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(
+            outer.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"inner\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            inner.join("Cargo.toml"),
+            "[workspace]\nmembers = []\n",
+        )
+        .unwrap();
+
+        let projects = find_cargo_projects(temp_dir.path(), &[]).unwrap();
+        // inner declares [workspace] so it is its own root, not collapsed into
+        // outer. Both are found as separate workspace projects.
+        assert_eq!(projects.len(), 2);
+        let paths: Vec<_> = projects.iter().map(|p| p.path.clone()).collect();
+        assert!(paths.contains(&outer));
+        assert!(paths.contains(&inner));
+    }
+
+    #[test]
+    fn test_find_cargo_projects_deterministic_order() {
+        let temp_dir = TempDir::new().unwrap();
+        for sub in ["zebra", "apple", "mango"] {
+            let dir = temp_dir.path().join(sub);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname = \"{sub}\"\nversion = \"0.1.0\"\n"),
+            )
+            .unwrap();
+        }
+
+        let projects = find_cargo_projects(temp_dir.path(), &[]).unwrap();
+        let names: Vec<String> = projects
+            .iter()
+            .map(|p| p.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["apple", "mango", "zebra"]);
+    }
 }
