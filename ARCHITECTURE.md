@@ -22,7 +22,7 @@
 
 ### 2. Project Discovery (`src/project.rs`)
 - Finds Cargo projects recursively
-- Detects workspaces using `cargo-metadata`
+- Detects workspaces by scanning manifests for `[workspace]` tables
 - Filters projects based on exclude patterns
 - Handles edge cases (nested workspaces, etc.)
 
@@ -45,8 +45,8 @@
 - Size string parsing
 
 ### 6. Dependency Cleaning (`src/deps.rs`)
-- Detects unused dependencies using cargo-udeps or cargo-machete
-- Parses tool output
+- Detects unused dependencies natively (Cargo.toml parsing + source scan; no external tools)
+- Matches dependency names against usage patterns (use statements, path expressions, macros, attributes)
 - Removes unused dependencies using cargo-remove
 - Reports dependency cleanup results
 
@@ -71,7 +71,7 @@ User Input (CLI args)
     ↓ (otherwise)
 Config Loading (if .deepclean.toml exists)
     ↓
-Project Discovery (walkdir + cargo-metadata)
+Project Discovery (walkdir + manifest scan)
     ↓
 Project Filtering (exclude patterns, size thresholds)
     ↓
@@ -90,24 +90,32 @@ Output Formatting (human-readable or JSON)
 1. Walk directory tree using `walkdir`
 2. Find all `Cargo.toml` files
 3. For each found file:
-   - Check if it's part of a workspace (using `cargo-metadata`)
-   - If workspace member, add workspace root (once)
+   - Check if it declares a `[workspace]` table (manifest header scan)
+   - If it's a workspace member, add workspace root (once)
    - If standalone, add project directory
 4. Deduplicate results
 
 **Workspace Detection:**
-- Uses `cargo-metadata` API for accurate detection
+- Scans manifest headers for `[workspace]` / `[workspace.*]` tables, skipping comments
+- No subprocesses — one file read per manifest, scales to large trees
+- Resolves each manifest to its nearest enclosing workspace root
 - Handles nested workspaces correctly
 - Avoids duplicate workspace processing
 
 ### Cleaning Process
 
+**Size Computation (single-pass caching):**
+1. When any phase needs sizes (`--min-size`, `--interactive`, `--dry-run`), all `target/` dirs are sized once in parallel up front (`cleaner::compute_target_sizes`)
+2. The min-size filter and interactive confirmation reuse the cached sizes instead of re-walking
+3. Dry-run reporting trusts the cached size (nothing mutates the disk, so it is still exact)
+4. Real runs always re-measure immediately before deletion, so freed-byte accounting stays accurate even if a build ran during an interactive pause
+5. Plain real runs (no flags) skip the up-front pass entirely — one walk per project inside `clean_project`
+
 **Target Directory Cleaning:**
 1. Calculate target directory size before cleaning
 2. Try `cargo clean` command first
 3. If that fails, fall back to direct `rm -rf target`
-4. Calculate actual space freed
-5. Report results
+4. Report the pre-clean size as space freed (the whole directory is removed, no post-walk needed)
 
 **Dependency Cleaning (optional):**
 1. Parse `Cargo.toml` to extract all dependencies
@@ -133,7 +141,6 @@ Output Formatting (human-readable or JSON)
 ## Dependencies
 
 ### Core
-- `cargo-metadata`: Workspace detection
 - `rayon`: Parallel processing
 - `clap`: CLI argument parsing
 - `anyhow`: Error handling
@@ -144,12 +151,9 @@ Output Formatting (human-readable or JSON)
 - `serde`/`serde_json`: JSON serialization
 
 ### Utilities
-- `walkdir`: Directory traversal
+- `walkdir`: Directory traversal and manifest discovery
 - `glob`: Pattern matching for excludes
-
-### Optional (for dependency removal)
-- `cargo-remove` (from cargo-edit): External tool for removing dependencies
-- `toml`: For parsing Cargo.toml files (built-in dependency detection)
+- `toml`: Manifest and config file parsing
 
 ## Configuration
 
@@ -248,12 +252,13 @@ Could support plugins for:
 ### Current
 - ✅ Linux
 - ✅ macOS
-- ✅ Windows
+- ⚠️ Windows — near-complete: project cleaning, dependency detection, home-directory resolution (`HOME` → `USERPROFILE` fallback in `utils::resolve_home`), and `--caches` registry paths (`%LOCALAPPDATA%`-based via `caches::build_registry_for`, covering npm, pip, uv, Poetry, pnpm, Yarn, Playwright, go-build; XDG-defaulted entries cover `~/.cache` tools like Puppeteer/HuggingFace/PyTorch) all work. Not CI-tested on Windows.
 
 ### Platform-Specific Considerations
 - Path separators handled by Rust stdlib
 - Line endings handled automatically
 - Terminal colors detected automatically
+- Home-directory resolution checks `HOME` then `USERPROFILE` (`src/utils.rs`)
 
 ## Future Architecture Improvements
 

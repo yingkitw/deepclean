@@ -1,6 +1,9 @@
 use anyhow::Result;
 use crate::project::Project;
 use crate::utils::get_directory_size;
+use rayon::prelude::*;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Command;
 
 #[derive(Debug, serde::Serialize)]
@@ -9,6 +12,29 @@ pub struct CleanResult {
     pub success: bool,
     pub freed_bytes: u64,
     pub error: Option<String>,
+    /// Unused-dependency findings, populated only when `--clean-deps` ran.
+    /// Omitted from JSON otherwise so existing consumers see no change.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unused_deps: Vec<crate::deps::UnusedDependency>,
+}
+
+/// Compute the `target/` size for every project in parallel, once, so that
+/// later phases (min-size filtering, interactive confirmation, dry-run
+/// reporting) reuse the results instead of re-walking the same directories.
+/// Projects without a `target/` directory map to 0.
+pub fn compute_target_sizes(projects: &[Project]) -> HashMap<PathBuf, u64> {
+    projects
+        .par_iter()
+        .map(|project| {
+            let target_dir = project.path.join("target");
+            let size = if target_dir.exists() {
+                get_directory_size(&target_dir).unwrap_or(0)
+            } else {
+                0
+            };
+            (target_dir, size)
+        })
+        .collect()
 }
 
 /// Clean a single Cargo project.
@@ -16,9 +42,28 @@ pub struct CleanResult {
 /// The target directory size is computed exactly once. Both `cargo clean` and a
 /// direct `remove_dir_all` delete the directory, so we report the pre-clean size
 /// as freed without re-walking afterward.
-pub fn clean_project(project: &Project, dry_run: bool, _verbose: bool) -> Result<CleanResult> {
+///
+/// `cached_size` (from [`compute_target_sizes`]) is trusted **only in dry-run
+/// mode**, where nothing mutates the disk so a previously computed size is
+/// still exact. Real runs always re-measure right before deletion so freed-byte
+/// accounting stays accurate even if a build ran in the meantime (e.g. during
+/// an interactive confirmation pause).
+pub fn clean_project(
+    project: &Project,
+    dry_run: bool,
+    _verbose: bool,
+    cached_size: Option<u64>,
+) -> Result<CleanResult> {
     let target_dir = project.path.join("target");
-    let freed_bytes = if target_dir.exists() {
+    let freed_bytes = if dry_run {
+        cached_size.unwrap_or_else(|| {
+            if target_dir.exists() {
+                get_directory_size(&target_dir).unwrap_or(0)
+            } else {
+                0
+            }
+        })
+    } else if target_dir.exists() {
         get_directory_size(&target_dir).unwrap_or(0)
     } else {
         0
@@ -30,6 +75,7 @@ pub fn clean_project(project: &Project, dry_run: bool, _verbose: bool) -> Result
             success: true,
             freed_bytes,
             error: None,
+            unused_deps: Vec::new(),
         });
     }
 
@@ -56,6 +102,7 @@ pub fn clean_project(project: &Project, dry_run: bool, _verbose: bool) -> Result
 Try running `cargo clean` manually in this project, or check file permissions.",
                                 target_dir, e
                             )),
+                            unused_deps: Vec::new(),
                         });
                     }
                 }
@@ -70,6 +117,7 @@ Try running `cargo clean` manually in this project, or check file permissions.",
         success,
         freed_bytes,
         error: None,
+        unused_deps: Vec::new(),
     })
 }
 
@@ -113,7 +161,7 @@ mod tests {
         let results: Vec<CleanResult> = projects
             .par_iter()
             .map(|project| {
-                clean_project(project, false, false).expect("clean should not error")
+                clean_project(project, false, false, None).expect("clean should not error")
             })
             .collect();
 
@@ -140,7 +188,7 @@ mod tests {
             path: dir.clone(),
             is_workspace: false,
         };
-        let result = clean_project(&project, true, false).unwrap();
+        let result = clean_project(&project, true, false, None).unwrap();
         assert!(result.success);
         assert!(result.freed_bytes > 0, "dry run should report size that would be freed");
         assert!(
@@ -166,7 +214,7 @@ mod tests {
             path: dir.clone(),
             is_workspace: false,
         };
-        let result = clean_project(&project, false, false).unwrap();
+        let result = clean_project(&project, false, false, None).unwrap();
         assert!(result.success);
         assert_eq!(result.freed_bytes, 0, "no target means 0 bytes freed");
     }
@@ -181,9 +229,94 @@ mod tests {
             path: dir.clone(),
             is_workspace: false,
         };
-        let result = clean_project(&project, false, false).unwrap();
+        let result = clean_project(&project, false, false, None).unwrap();
         assert!(result.success);
         assert!(result.freed_bytes > 0);
         assert!(!dir.join("target").exists());
+    }
+
+    #[test]
+    fn test_dry_run_uses_cached_size_without_rewalk() {
+        let temp = TempDir::new().unwrap();
+        write_project_with_target(temp.path(), "cached");
+        let dir = temp.path().join("cached");
+        let actual = get_directory_size(&dir.join("target")).unwrap();
+        assert!(actual > 0);
+
+        let project = Project {
+            path: dir,
+            is_workspace: false,
+        };
+        // A cached value that differs from the real size must be reported as-is:
+        // proves the dry-run path trusts the cache instead of re-walking.
+        let result = clean_project(&project, true, false, Some(actual + 12345)).unwrap();
+        assert!(result.success);
+        assert_eq!(result.freed_bytes, actual + 12345);
+    }
+
+    #[test]
+    fn test_dry_run_without_cache_still_walks() {
+        let temp = TempDir::new().unwrap();
+        write_project_with_target(temp.path(), "nocache");
+        let dir = temp.path().join("nocache");
+        let actual = get_directory_size(&dir.join("target")).unwrap();
+
+        let project = Project {
+            path: dir,
+            is_workspace: false,
+        };
+        let result = clean_project(&project, true, false, None).unwrap();
+        assert_eq!(result.freed_bytes, actual);
+    }
+
+    #[test]
+    fn test_real_run_ignores_cached_size() {
+        let temp = TempDir::new().unwrap();
+        write_project_with_target(temp.path(), "stale");
+        let dir = temp.path().join("stale");
+        let actual = get_directory_size(&dir.join("target")).unwrap();
+
+        let project = Project {
+            path: dir.clone(),
+            is_workspace: false,
+        };
+        // Real runs re-measure right before deletion; a stale cache value must
+        // never be reported as freed.
+        let result = clean_project(&project, false, false, Some(actual + 999_999)).unwrap();
+        assert!(result.success);
+        assert_eq!(result.freed_bytes, actual);
+        assert!(!dir.join("target").exists());
+    }
+
+    #[test]
+    fn test_compute_target_sizes_maps_targets_and_zeros_missing() {
+        let temp = TempDir::new().unwrap();
+        write_project_with_target(temp.path(), "with_target");
+        let bare = temp.path().join("bare");
+        fs::create_dir_all(bare.join("src")).unwrap();
+        fs::write(
+            bare.join("Cargo.toml"),
+            "[package]\nname = \"bare\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(bare.join("src/main.rs"), "fn main() {}").unwrap();
+
+        let projects = vec![
+            Project {
+                path: temp.path().join("with_target"),
+                is_workspace: false,
+            },
+            Project {
+                path: bare.clone(),
+                is_workspace: false,
+            },
+        ];
+        let sizes = compute_target_sizes(&projects);
+        assert_eq!(sizes.len(), 2);
+        assert_eq!(
+            sizes.get(&temp.path().join("with_target").join("target")),
+            Some(&get_directory_size(&temp.path().join("with_target").join("target")).unwrap())
+        );
+        assert_eq!(sizes.get(&bare.join("target")), Some(&0));
     }
 }

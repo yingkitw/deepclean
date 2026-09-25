@@ -88,10 +88,9 @@ fn collect_source_text(project_path: &Path) -> Vec<String> {
         for entry in WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
             if entry.file_type().is_file()
                 && entry.path().extension().is_some_and(|e| e == "rs")
+                && let Ok(content) = fs::read_to_string(entry.path())
             {
-                if let Ok(content) = fs::read_to_string(entry.path()) {
-                    contents.push(content);
-                }
+                contents.push(content);
             }
         }
     }
@@ -534,5 +533,271 @@ serde_derive = "1.0"
         let temp_dir = tempfile::TempDir::new().unwrap();
         let texts = collect_source_text(temp_dir.path());
         assert!(texts.is_empty());
+    }
+
+    #[test]
+    fn test_extract_dependencies_renamed_dep_uses_manifest_key() {
+        // `foo = { package = "bar" }` means the crate is imported as `foo` in
+        // code, so the manifest key (not the package name) is the dep name.
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"
+[dependencies]
+foo = { package = "bar", version = "1.0" }
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_dependencies(&cargo_toml).unwrap();
+        let names: Vec<String> = deps.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(names, vec!["foo".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_dependencies_ignores_workspace_dependencies() {
+        // `[workspace.dependencies]` entries live under the `workspace` key and
+        // are intentionally not extracted: inheritance is not resolved, so
+        // inherited deps can never be falsely flagged as unused.
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"
+[workspace.dependencies]
+serde = "1.0"
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_dependencies(&cargo_toml).unwrap();
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_extract_dependencies_invalid_toml_is_err() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, "not [ valid toml").unwrap();
+        assert!(extract_dependencies(&cargo_toml).is_err());
+    }
+
+    #[test]
+    fn test_extract_dependencies_missing_file_is_err() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        assert!(extract_dependencies(&temp_dir.path().join("Cargo.toml")).is_err());
+    }
+
+    #[test]
+    fn test_check_unused_dependencies_missing_manifest_is_empty() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let project = crate::project::Project {
+            path: temp_dir.path().to_path_buf(),
+            is_workspace: false,
+        };
+        let unused = check_unused_dependencies(&project).unwrap();
+        assert!(unused.is_empty());
+    }
+
+    #[test]
+    fn test_is_dependency_used_bare_use_statement() {
+        let sources = vec!["use tempfile;".to_string()];
+        assert!(is_dependency_used("tempfile", &sources, ""));
+    }
+
+    #[test]
+    fn test_is_dependency_used_use_crate_path() {
+        let sources = vec!["use crate::serde_json::Value;".to_string()];
+        assert!(is_dependency_used("serde-json", &sources, ""));
+    }
+
+    #[test]
+    fn test_is_dependency_used_extern_crate() {
+        let sources = vec!["extern crate libc;".to_string()];
+        assert!(is_dependency_used("libc", &sources, ""));
+    }
+
+    #[test]
+    fn test_is_dependency_used_manifest_normalized_variants() {
+        // Dependency "serde-json" referenced in the manifest with its
+        // underscore-normalized name (feature refs, aliases, version pins).
+        let sources = vec!["fn main() {}".to_string()];
+        assert!(is_dependency_used(
+            "serde-json",
+            &sources,
+            "[features]\nbig = [\"serde_json/fancy\"]\n"
+        ));
+        assert!(is_dependency_used(
+            "serde-json",
+            &sources,
+            "[package]\nname = \"serde_json-something\"\n"
+        ));
+    }
+
+    #[test]
+    fn test_is_dependency_used_plain_name_no_false_positive() {
+        // A bare mention without ::, !, #[, /, or - separators must NOT count.
+        let sources = vec!["let serdejson = 1;".to_string()];
+        assert!(!is_dependency_used("serde-json", &sources, ""));
+    }
+
+    #[test]
+    fn test_check_unused_dependencies_dev_and_build_locations() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dev-dependencies]
+unused-dev = "1.0"
+
+[build-dependencies]
+cc = "1.0"
+"#,
+        )
+        .unwrap();
+        fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+        // cc is used by build.rs, so it must not be flagged.
+        fs::write(
+            temp_dir.path().join("build.rs"),
+            "fn main() { let _ = cc::compiler(); }",
+        )
+        .unwrap();
+
+        let project = crate::project::Project {
+            path: temp_dir.path().to_path_buf(),
+            is_workspace: false,
+        };
+        let unused = check_unused_dependencies(&project).unwrap();
+        let names: Vec<String> = unused.iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"unused-dev".to_string()));
+        assert!(!names.contains(&"cc".to_string()), "cc is used in build.rs");
+        let dev = unused.iter().find(|d| d.name == "unused-dev").unwrap();
+        assert_eq!(dev.location, "[dev-dependencies]");
+    }
+
+    #[test]
+    fn test_check_unused_dependencies_skips_derive_and_proc_macro_names() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+some_derive = "1.0"
+my-proc-macro-helper = "1.0"
+thiserror = "1.0"
+"#,
+        )
+        .unwrap();
+        fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        let project = crate::project::Project {
+            path: temp_dir.path().to_path_buf(),
+            is_workspace: false,
+        };
+        let unused = check_unused_dependencies(&project).unwrap();
+        let names: Vec<String> = unused.iter().map(|d| d.name.clone()).collect();
+        assert!(
+            !names.contains(&"some_derive".to_string()),
+            "*_derive names are skipped (likely used via re-exported macros)"
+        );
+        assert!(
+            !names.contains(&"my-proc-macro-helper".to_string()),
+            "names containing proc-macro are skipped"
+        );
+        assert!(
+            names.contains(&"thiserror".to_string()),
+            "normal deps outside the skip filters are still checked"
+        );
+    }
+
+    #[test]
+    fn test_collect_source_text_includes_tests_dir() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(temp_dir.path().join("tests")).unwrap();
+        fs::write(
+            temp_dir.path().join("tests/integration.rs"),
+            "use my_crate::thing;",
+        )
+        .unwrap();
+        let texts = collect_source_text(temp_dir.path());
+        assert_eq!(texts.len(), 1);
+        assert!(texts[0].contains("my_crate"));
+    }
+
+    #[test]
+    fn test_collect_source_text_skips_invalid_utf8() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        fs::write(temp_dir.path().join("src/binary.bin.rs"), [0xFF, 0xFE, 0x00]).unwrap();
+        fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+        let texts = collect_source_text(temp_dir.path());
+        assert_eq!(texts.len(), 1, "invalid UTF-8 file skipped without error");
+    }
+
+    #[test]
+    fn test_remove_unused_dependencies_dry_run_is_noop() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let project = crate::project::Project {
+            path: temp_dir.path().to_path_buf(),
+            is_workspace: false,
+        };
+        let unused = vec![UnusedDependency {
+            name: "whatever".to_string(),
+            location: "[dependencies]".to_string(),
+        }];
+        let removed = remove_unused_dependencies(&project, &unused, true, false).unwrap();
+        assert_eq!(removed, 0, "dry run removes nothing");
+    }
+
+    #[test]
+    fn test_remove_unused_dependencies_empty_list_is_noop() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let project = crate::project::Project {
+            path: temp_dir.path().to_path_buf(),
+            is_workspace: false,
+        };
+        let removed = remove_unused_dependencies(&project, &[], false, false).unwrap();
+        assert_eq!(removed, 0, "nothing to remove");
+    }
+
+    #[test]
+    fn test_clean_dependencies_dry_run_reports_without_removing() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+never-used = "1.0"
+"#,
+        )
+        .unwrap();
+        fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        let project = crate::project::Project {
+            path: temp_dir.path().to_path_buf(),
+            is_workspace: false,
+        };
+        let result = clean_dependencies(&project, true, true, false).unwrap();
+        assert!(result.success);
+        assert_eq!(result.removed_count, 0, "dry run never removes");
+        assert_eq!(result.unused_deps.len(), 1);
+        assert_eq!(result.unused_deps[0].name, "never-used");
+        assert!(result.error.is_none());
     }
 }

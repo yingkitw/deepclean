@@ -48,7 +48,7 @@ cargo deepclean --dry-run
 ### Cargo project cleaning
 
 - ✅ **Parallel processing** — cleans multiple projects simultaneously across all CPU cores
-- ✅ **Smart workspace detection** — uses `cargo-metadata` to find and collapse workspaces accurately
+- ✅ **Smart workspace detection** — scans `Cargo.toml` manifests to collapse workspace members to their root, no subprocesses required
 - ✅ **Size filtering** — `--min-size 100MB` cleans only projects above a threshold
 - ✅ **Exclude patterns** — skip directories with glob patterns (`-e "**/node_modules"`)
 - ✅ **Dry-run mode** — preview exactly what would be cleaned before deleting
@@ -161,9 +161,14 @@ cargo deepclean --json
 cargo deepclean --caches --json
 ```
 
+When `--clean-deps` is enabled, each entry in `results` also carries an
+`unused_deps` array (`name`, `location`) with the detection findings. The field
+is omitted entirely when dependency detection did not run, so existing JSON
+consumers see a stable shape.
+
 ## How It Works
 
-1. **Discovery** — recursively finds all `Cargo.toml` files using `walkdir` and resolves workspaces with `cargo-metadata`.
+1. **Discovery** — recursively finds all `Cargo.toml` files using `walkdir` and resolves workspace membership by scanning manifests for `[workspace]` tables (no external commands).
 2. **Filtering** — applies exclude patterns and optional `--min-size` threshold.
 3. **Cleaning** — removes `target/` directories in parallel via `rayon`; falls back to direct `rm -rf` if `cargo clean` fails.
 4. **Dependency analysis** — parses `Cargo.toml` and scans `src/`, `examples/`, `tests/`, and `build.rs` for dependency usage; reports or removes unused crates.

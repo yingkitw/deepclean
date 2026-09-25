@@ -10,14 +10,16 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use colored::control;
 use colored::Colorize;
-use cleaner::{clean_project, CleanResult};
+use cleaner::{clean_project, compute_target_sizes, CleanResult};
 use config::{load_config, resolve_settings};
 use deps::clean_dependencies;
 use output::{create_progress_bars, create_project_progress_bar, print_error, print_summary, print_verbose_cleaned, Summary};
 use project::find_cargo_projects;
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
-use utils::{get_directory_size, parse_size};
+use std::path::PathBuf;
+use utils::parse_size;
 
 #[derive(Parser, Debug)]
 #[command(name = "cargo-deepclean")]
@@ -70,16 +72,19 @@ struct Args {
     caches: bool,
 }
 
-fn parse_args() -> Args {
-    let mut args_iter = std::env::args();
+/// Parse CLI args from an explicit argv vector (pure, testable).
+///
+/// Handles the cargo-subcommand offset: when invoked as `cargo deepclean
+/// --flag`, argv is `[cargo, deepclean, --flag]` and clap needs it re-shaped to
+/// `[cargo, --flag]`, otherwise the first flag is swallowed as the binary name.
+fn parse_args_from(args: Vec<String>) -> Args {
+    let mut args_iter = args.into_iter();
     let program_name = args_iter.next();
 
     let first_arg = args_iter.next();
     if first_arg.as_deref() == Some("deepclean") {
-        // Invoked as `cargo deepclean ...`: clap's `parse_from` treats the
-        // first element as argv[0], so re-prepend the program name before the
-        // remaining flags. Without this, the first flag would be swallowed as
-        // the binary name.
+        // Invoked as `cargo deepclean ...`: re-prepend the program name before
+        // the remaining flags.
         let prog = program_name.unwrap_or_else(|| "cargo-deepclean".to_string());
         let rest: Vec<String> = std::iter::once(prog).chain(args_iter).collect();
         Args::parse_from(rest)
@@ -93,7 +98,15 @@ fn parse_args() -> Args {
     }
 }
 
-fn confirm_interactive(projects: &[project::Project], dry_run: bool) -> Result<bool> {
+fn parse_args() -> Args {
+    parse_args_from(std::env::args().collect())
+}
+
+fn confirm_interactive(
+    projects: &[project::Project],
+    dry_run: bool,
+    target_sizes: &HashMap<PathBuf, u64>,
+) -> Result<bool> {
     println!();
     println!(
         "{} Found {} project(s) to clean:",
@@ -102,11 +115,7 @@ fn confirm_interactive(projects: &[project::Project], dry_run: bool) -> Result<b
     );
     for project in projects {
         let target_dir = project.path.join("target");
-        let size = if target_dir.exists() {
-            get_directory_size(&target_dir).unwrap_or(0)
-        } else {
-            0
-        };
+        let size = target_sizes.get(&target_dir).copied().unwrap_or(0);
         println!(
             "  • {} ({})",
             project.path.display(),
@@ -204,16 +213,23 @@ Ensure the path exists and you have permission to read it.",
         None
     };
 
+    // Size every target/ exactly once, up front, whenever any phase needs
+    // sizes: min-size filtering, interactive confirmation, or dry-run
+    // reporting. Plain real runs skip this pass entirely — `clean_project`
+    // re-measures right before deletion for accurate freed-byte accounting.
+    let needs_sizes = min_size_bytes.is_some() || args.interactive || args.dry_run;
+    let target_sizes: HashMap<PathBuf, u64> = if needs_sizes {
+        compute_target_sizes(&projects)
+    } else {
+        HashMap::new()
+    };
+
     let projects: Vec<_> = if let Some(min_bytes) = min_size_bytes {
         projects
-            .par_iter()
+            .iter()
             .filter(|project| {
                 let target_dir = project.path.join("target");
-                if target_dir.exists() {
-                    get_directory_size(&target_dir).unwrap_or(0) >= min_bytes
-                } else {
-                    false
-                }
+                target_sizes.get(&target_dir).copied().unwrap_or(0) >= min_bytes
             })
             .cloned()
             .collect()
@@ -238,7 +254,7 @@ Ensure the path exists and you have permission to read it.",
         return Ok(());
     }
 
-    if args.interactive && !confirm_interactive(&projects, args.dry_run)? {
+    if args.interactive && !confirm_interactive(&projects, args.dry_run, &target_sizes)? {
         if !settings.json {
             println!("{} Cancelled by user", "[INFO]".blue().bold());
         }
@@ -292,13 +308,19 @@ Ensure the path exists and you have permission to read it.",
                 );
             }
 
-            let result = clean_project(project, args.dry_run, args.verbose);
+            let cached_size = target_sizes
+                .get(&project.path.join("target"))
+                .copied();
+            let mut result = clean_project(project, args.dry_run, args.verbose, cached_size);
 
             if args.clean_deps || args.remove_deps {
                 let deps_result =
                     clean_dependencies(project, args.dry_run, args.remove_deps, args.verbose);
                 match deps_result {
                     Ok(deps_clean) => {
+                        if let Ok(ref mut r) = result {
+                            r.unused_deps = deps_clean.unused_deps.clone();
+                        }
                         if !deps_clean.unused_deps.is_empty() {
                             if !settings.json {
                                 println!(
@@ -352,15 +374,15 @@ Install cargo-remove with `cargo install cargo-edit`.",
                             );
                         }
 
-                        if let Some(ref error) = deps_clean.error {
-                            if !settings.json {
-                                println!(
-                                    "{} Error during dependency removal in {:?}: {}",
-                                    "[ERROR]".red().bold(),
-                                    project.path,
-                                    error
-                                );
-                            }
+                        if let Some(ref error) = deps_clean.error
+                            && !settings.json
+                        {
+                            println!(
+                                "{} Error during dependency removal in {:?}: {}",
+                                "[ERROR]".red().bold(),
+                                project.path,
+                                error
+                            );
                         }
                     }
                     Err(e) => {
@@ -407,6 +429,7 @@ Install cargo-remove with `cargo install cargo-edit`.",
                         success: false,
                         freed_bytes: 0,
                         error: Some(error_msg),
+                        unused_deps: Vec::new(),
                     })
                 }
             }
@@ -440,4 +463,89 @@ Install cargo-remove with `cargo install cargo-edit`.",
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_parse_args_from_direct_invocation_flags() {
+        let a = parse_args_from(args(&["cargo-deepclean", "--dry-run", "--json"]));
+        assert!(a.dry_run);
+        assert!(a.json);
+        assert_eq!(a.directory, PathBuf::from("."));
+    }
+
+    #[test]
+    fn test_parse_args_from_subcommand_path_preserves_first_flag() {
+        // Regression: `cargo deepclean --dry-run` must not swallow --dry-run
+        // as the binary name.
+        let a = parse_args_from(args(&["cargo", "deepclean", "--dry-run"]));
+        assert!(a.dry_run, "first flag after `deepclean` must be preserved");
+        assert_eq!(a.directory, PathBuf::from("."));
+    }
+
+    #[test]
+    fn test_parse_args_from_subcommand_path_with_flags() {
+        let a = parse_args_from(args(&[
+            "cargo",
+            "deepclean",
+            "--verbose",
+            "--min-size",
+            "100MB",
+        ]));
+        assert!(a.verbose);
+        assert_eq!(a.min_size.as_deref(), Some("100MB"));
+    }
+
+    #[test]
+    fn test_parse_args_from_positional_directory() {
+        let a = parse_args_from(args(&["cargo-deepclean", "some/dir", "--dry-run"]));
+        assert_eq!(a.directory, PathBuf::from("some/dir"));
+        assert!(a.dry_run);
+    }
+
+    #[test]
+    fn test_parse_args_from_subcommand_with_directory_and_jobs() {
+        let a = parse_args_from(args(&["cargo", "deepclean", "/tmp/x", "-j", "4"]));
+        assert_eq!(a.directory, PathBuf::from("/tmp/x"));
+        assert_eq!(a.jobs, Some(4));
+    }
+
+    #[test]
+    fn test_parse_args_from_defaults() {
+        let a = parse_args_from(args(&["cargo-deepclean"]));
+        assert!(!a.dry_run);
+        assert!(!a.json);
+        assert!(!a.verbose);
+        assert!(!a.caches);
+        assert!(!a.interactive);
+        assert!(a.exclude_patterns.is_empty());
+        assert!(a.jobs.is_none());
+        assert_eq!(a.directory, PathBuf::from("."));
+    }
+
+    #[test]
+    fn test_parse_args_from_subcommand_caches_flag() {
+        let a = parse_args_from(args(&["cargo", "deepclean", "--caches", "--dry-run"]));
+        assert!(a.caches);
+        assert!(a.dry_run);
+    }
+
+    #[test]
+    fn test_parse_args_from_short_excludes_repeated() {
+        let a = parse_args_from(args(&[
+            "cargo-deepclean",
+            "-e",
+            "node_modules",
+            "-e",
+            "**/vendor",
+        ]));
+        assert_eq!(a.exclude_patterns, vec!["node_modules", "**/vendor"]);
+    }
 }

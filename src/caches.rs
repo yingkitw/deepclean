@@ -1,8 +1,9 @@
-use crate::utils::{format_bytes, get_directory_size};
+use crate::utils::{format_bytes, get_directory_size, home_dir};
 use anyhow::Result;
 use colored::Colorize;
 use rayon::prelude::*;
 use serde::Serialize;
+use std::ffi::OsString;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -49,10 +50,6 @@ pub struct CacheCleanResult {
     pub error: Option<String>,
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
-}
-
 /// Build the full registry of known caches. Paths that do not exist are filtered
 /// out later by [`discover_caches`].
 pub fn build_registry() -> Vec<CacheEntry> {
@@ -60,11 +57,38 @@ pub fn build_registry() -> Vec<CacheEntry> {
         Some(h) => h,
         None => return Vec::new(),
     };
-    let xdg = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".cache"));
+    let xdg = env_base_dir(
+        std::env::var_os("XDG_CACHE_HOME"),
+        home.join(".cache"),
+    );
     let mac = home.join("Library/Caches");
+    let win_local = env_base_dir(
+        std::env::var_os("LOCALAPPDATA"),
+        home.join("AppData/Local"),
+    );
+    build_registry_for(&home, &xdg, &mac, &win_local)
+}
 
+/// Resolve a base directory from an env var, falling back when unset **or empty**.
+///
+/// A set-but-empty value must not swallow the fallback (it would yield a bogus
+/// relative path `""`) — same lesson as `utils::resolve_home`. Pure so it is
+/// testable without mutating process environment.
+fn env_base_dir(env: Option<OsString>, fallback: PathBuf) -> PathBuf {
+    env.filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or(fallback)
+}
+
+/// Build the registry from explicit base directories (pure, testable).
+///
+/// Base-dir conventions:
+/// - `home`: `$HOME` / `%USERPROFILE%` — tool dirs like `.cargo`, `.npm`, `.bun`
+/// - `xdg`: `$XDG_CACHE_HOME`, defaulting to `~/.cache` (also where Windows tools
+///   like puppeteer/HuggingFace/torch live, since `%USERPROFILE%\.cache` is their default)
+/// - `mac`: `~/Library/Caches` (macOS per-tool cache subdirs)
+/// - `win_local`: `%LOCALAPPDATA%`, defaulting to `~/AppData/Local` (Windows per-tool caches)
+fn build_registry_for(home: &Path, xdg: &Path, mac: &Path, win_local: &Path) -> Vec<CacheEntry> {
     vec![
         // Rust
         CacheEntry::new(
@@ -88,21 +112,29 @@ pub fn build_registry() -> Vec<CacheEntry> {
             "pip",
             "Python",
             "safe",
-            vec![mac.join("pip"), xdg.join("pip")],
+            vec![mac.join("pip"), xdg.join("pip"), win_local.join("pip")],
         ),
         CacheEntry::new(
             "uv",
             "uv",
             "Python",
             "safe",
-            vec![xdg.join("uv"), mac.join("uv")],
+            vec![
+                xdg.join("uv"),
+                mac.join("uv"),
+                win_local.join("uv"),
+            ],
         ),
         CacheEntry::new(
             "poetry",
             "Poetry",
             "Python",
             "safe",
-            vec![mac.join("pypoetry"), xdg.join("pypoetry")],
+            vec![
+                mac.join("pypoetry"),
+                xdg.join("pypoetry"),
+                win_local.join("pypoetry"),
+            ],
         ),
         // JS/TS
         CacheEntry::new(
@@ -110,7 +142,11 @@ pub fn build_registry() -> Vec<CacheEntry> {
             "npm",
             "JS/TS",
             "safe",
-            vec![home.join(".npm/_cacache"), home.join(".npm/_npx")],
+            vec![
+                home.join(".npm/_cacache"),
+                home.join(".npm/_npx"),
+                win_local.join("npm-cache"),
+            ],
         ),
         CacheEntry::new(
             "bun",
@@ -127,6 +163,7 @@ pub fn build_registry() -> Vec<CacheEntry> {
             vec![
                 home.join(".local/share/pnpm"),
                 home.join("Library/pnpm"),
+                win_local.join("pnpm"),
             ],
         ),
         CacheEntry::new(
@@ -134,7 +171,11 @@ pub fn build_registry() -> Vec<CacheEntry> {
             "Yarn cache",
             "JS/TS",
             "safe",
-            vec![mac.join("Yarn"), home.join(".yarn")],
+            vec![
+                mac.join("Yarn"),
+                home.join(".yarn"),
+                win_local.join("Yarn"),
+            ],
         ),
         // Other
         CacheEntry::new(
@@ -157,7 +198,11 @@ pub fn build_registry() -> Vec<CacheEntry> {
             "Playwright browsers",
             "Other",
             "heavy",
-            vec![mac.join("ms-playwright"), xdg.join("ms-playwright")],
+            vec![
+                mac.join("ms-playwright"),
+                xdg.join("ms-playwright"),
+                win_local.join("ms-playwright"),
+            ],
         )
         .with_note("Browser binaries; re-downloads on next run"),
         CacheEntry::new(
@@ -181,7 +226,11 @@ pub fn build_registry() -> Vec<CacheEntry> {
             "Go build cache",
             "Other",
             "safe",
-            vec![mac.join("go-build"), xdg.join("go-build")],
+            vec![
+                mac.join("go-build"),
+                xdg.join("go-build"),
+                win_local.join("go-build"),
+            ],
         ),
         CacheEntry::new(
             "codex-runtimes",
@@ -621,5 +670,80 @@ mod tests {
     #[test]
     fn test_parse_selection_empty() {
         assert!(parse_selection("", 5).is_empty());
+    }
+
+    #[test]
+    fn test_env_base_dir_treats_empty_as_unset() {
+        let fallback = PathBuf::from("/fallback");
+        assert_eq!(env_base_dir(None, fallback.clone()), fallback);
+        assert_eq!(env_base_dir(Some("".into()), fallback.clone()), fallback);
+        assert_eq!(
+            env_base_dir(Some("/custom".into()), fallback),
+            PathBuf::from("/custom")
+        );
+    }
+
+    #[test]
+    fn test_registry_windows_localappdata_paths() {
+        let home = PathBuf::from("/home/t");
+        let win_local = home.join("AppData/Local");
+        let reg = build_registry_for(
+            &home,
+            &home.join(".cache"),
+            &home.join("Library/Caches"),
+            &win_local,
+        );
+        let find = |id: &str| {
+            reg.iter()
+                .find(|e| e.id == id)
+                .unwrap_or_else(|| panic!("missing entry {}", id))
+        };
+        assert!(find("npm").paths.contains(&win_local.join("npm-cache")));
+        assert!(find("pip").paths.contains(&win_local.join("pip")));
+        assert!(find("uv").paths.contains(&win_local.join("uv")));
+        assert!(find("poetry").paths.contains(&win_local.join("pypoetry")));
+        assert!(find("pnpm").paths.contains(&win_local.join("pnpm")));
+        assert!(find("yarn").paths.contains(&win_local.join("Yarn")));
+        assert!(find("playwright").paths.contains(&win_local.join("ms-playwright")));
+        assert!(find("go-build").paths.contains(&win_local.join("go-build")));
+    }
+
+    #[test]
+    fn test_registry_xdg_default_covers_windows_dotcache() {
+        // On Windows XDG_CACHE_HOME is unset and xdg defaults to ~/.cache, which is
+        // also where puppeteer/HuggingFace/torch/codex store data on Windows.
+        let home = PathBuf::from("/home/t");
+        let reg = build_registry_for(
+            &home,
+            &home.join(".cache"),
+            &home.join("Library/Caches"),
+            &home.join("AppData/Local"),
+        );
+        let find = |id: &str| {
+            reg.iter()
+                .find(|e| e.id == id)
+                .unwrap_or_else(|| panic!("missing entry {}", id))
+        };
+        assert!(find("puppeteer").paths.contains(&home.join(".cache/puppeteer")));
+        assert!(find("huggingface").paths.contains(&home.join(".cache/huggingface")));
+        assert!(find("torch").paths.contains(&home.join(".cache/torch")));
+    }
+
+    #[test]
+    fn test_registry_cargo_and_bun_are_home_based_on_all_platforms() {
+        let home = PathBuf::from("/home/t");
+        let reg = build_registry_for(
+            &home,
+            &home.join(".cache"),
+            &home.join("Library/Caches"),
+            &home.join("AppData/Local"),
+        );
+        let find = |id: &str| {
+            reg.iter()
+                .find(|e| e.id == id)
+                .unwrap_or_else(|| panic!("missing entry {}", id))
+        };
+        assert!(find("cargo-cache").paths.contains(&home.join(".cargo/registry/cache")));
+        assert!(find("bun").paths.contains(&home.join(".bun/install/cache")));
     }
 }

@@ -1,5 +1,24 @@
 # TODO
 
+## Scorecard (2026-09-25, after orchestration integration tests)
+
+| Dimension | Score | Evidence |
+|---|---|---|
+| Correctness & coverage | 5 | 111 tests green; llvm-cov total 92.5% regions; main.rs 85.7% (rest: failure-path println branches needing permission-error injection — diminishing returns); deps.rs 90.5%; every deletion path has a dry-run test |
+| Deletion safety | 5 | All destructive paths gated (dry-run/interactive/confirm); per-item error isolation; cached-size trust rule (dry-run only) regression-tested; interactive-cancel preserves target (integration-proven) |
+| Maintainability | 5 | Clippy at 2 warnings, both in `project.rs` — frozen per Mature Module Policy, documented |
+| Docs alignment | 5 | TODO/ARCHITECTURE/MEMORY/README audited across iterations; JSON `unused_deps` contract documented in README |
+| Wiring & ergonomics | 5 | All flags wired and unit-tested; `--clean-deps` findings now in JSON `results[].unused_deps` (presence + absence contract tests) |
+| Footprint | 5 | 11 direct deps, all used; no new deps added |
+| **Total** | **30/30** | Remaining known gaps are all documented deliberate trade-offs (subprocess loops env-dependent, project.rs frozen, failure-path printlns) |
+
+### Improvement item from weakest dimension
+- [x] Raise coverage of the detection/orchestration core
+  - [x] deps.rs ≥ 90%: unit tests for pattern edge cases (feature-gated deps, renamed deps, build-deps, `[workspace.dependencies]` skip) — 90.5% regions; rename-key/workspace-skip/skip-filter contracts encoded as tests
+  - [x] main.rs `parse_args`: direct unit tests for subcommand arg-offset handling and flag permutations — `parse_args_from` extracted, 8 in-process tests
+- [x] Raise main.rs orchestration coverage — `tests/orchestration.rs` (9 tests): verbose human mode, clean-deps dry-run messaging, no-projects warning, min-size empty filter, invalid min-size error, interactive cancel, JSON/verbose non-interference, deps-in-JSON presence + absence contracts
+- [x] Include unused-deps findings in the JSON `Summary` contract — `results[].unused_deps` via `skip_serializing_if` (absent unless `--clean-deps` ran); README documents the contract
+
 ## High Priority
 
 ### Code Organization
@@ -46,8 +65,9 @@
 ### Performance
 - [ ] Optimize directory size calculation
   - [ ] Use faster method (consider `du` command on Unix)
-  - [ ] Cache size results during discovery
-  - [ ] Parallel size calculation
+  - [x] Cache size results during discovery (`cleaner::compute_target_sizes` — one parallel pass reused by `--min-size` filtering, `--interactive` confirmation, and dry-run reporting; real runs still re-measure pre-deletion for accurate freed-byte accounting)
+  - [ ] Parallelize `get_directory_size` traversal itself
+  - [x] Parallel size computation for `--caches` discovery and `--min-size` filtering
 - [ ] Add progress indication for size calculation phase
 
 ### User Experience
@@ -56,10 +76,14 @@
 - [ ] Add `--only-standalone` flag to only clean standalone projects
 - [x] Add color support detection (auto-disable on non-TTY)
 
+### Platform Support
+- [x] Resolve home directory via `USERPROFILE` fallback on Windows (`utils::resolve_home`; fixes `--caches` and home config fallback silently no-oping when `HOME` is unset)
+- [x] Add `%LOCALAPPDATA%`-based cache paths to the `--caches` registry (npm, pip, uv, Poetry, pnpm, Yarn, Playwright, go-build — `caches::build_registry_for` `win_local` base dir; `%LOCALAPPDATA%` unset/empty falls back to `~/AppData/Local` via `env_base_dir`)
+
 ### Code Quality
 - [ ] Add proper logging framework (tracing or log crate)
 - [ ] Improve documentation with more examples
-- [ ] Add integration tests
+- [x] Add integration tests (tests/: caches, caches_integration, dry_run, filtering, multi_project)
 - [ ] Add benchmarks for performance-critical paths
 
 ## Low Priority

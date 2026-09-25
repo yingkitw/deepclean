@@ -1,4 +1,6 @@
-# Design Decisions & Architecture
+# Design Decisions & Rationale
+
+Why deepclean is written in Rust, and why each major crate and technique was chosen. For current module structure and data flow, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why Rust?
 
@@ -31,16 +33,16 @@ This project was originally implemented as a bash script, but was rewritten in R
    - String-based arithmetic (can fail with edge cases)
    - Limited error messages
 
-6. **No Proper Cargo Integration**
-   - Didn't use `cargo metadata` for workspace detection
-   - Manual parsing of Cargo.toml files
-   - Could miss edge cases in workspace configuration
+6. **Fragile Detection Logic**
+   - `grep`-based workspace detection couldn't resolve members to their workspace root
+   - No deduplication of workspace roots
+   - No handling of nested workspaces
 
 ## Rust Implementation Benefits
 **Advantages:**
 - ✅ **Cross-platform**: No OS-specific code needed
 - ✅ **Better error handling**: Result types provide type-safe error handling
-- ✅ **Proper workspace detection**: Uses `cargo-metadata` crate for accurate workspace detection
+- ✅ **Proper workspace detection**: Manifest-header scanning (`[workspace]` tables) with nearest-root resolution and deduplication
 - ✅ **Parallel processing**: Uses `rayon` for concurrent cleaning
 - ✅ **Type safety**: Compile-time guarantees prevent many bugs
 - ✅ **Better performance**: Parallel execution significantly faster
@@ -60,10 +62,11 @@ This project was originally implemented as a bash script, but was rewritten in R
 
 ## Architecture Decisions
 
-### Why cargo-metadata?
-- Uses Cargo's own APIs for workspace detection
-- Handles all edge cases that manual parsing would miss
-- Automatically handles workspace member resolution
+### Why manifest-based workspace detection?
+- No subprocesses — one file read per manifest, so discovery scales to large trees
+- A targeted scan of table headers (`[workspace]`, `[workspace.*]`), skipping comments, is deterministic and platform-independent
+- Members resolve to their nearest enclosing workspace root; roots are deduplicated
+- Avoids the version-pinning and compile-time cost of heavyweight metadata crates
 
 ### Why rayon?
 - Simple parallel processing API

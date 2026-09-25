@@ -43,17 +43,17 @@ pub fn load_config(start_dir: &Path) -> Result<Option<DeepcleanConfig>> {
         return Ok(Some(config));
     }
 
-    if let Some(home) = home_config_path() {
-        if let Some(config) = try_load_from(home)? {
-            return Ok(Some(config));
-        }
+    if let Some(home) = home_config_path()
+        && let Some(config) = try_load_from(home)?
+    {
+        return Ok(Some(config));
     }
 
     Ok(None)
 }
 
 fn home_config_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(CONFIG_FILENAME))
+    crate::utils::home_dir().map(|home| home.join(CONFIG_FILENAME))
 }
 
 fn try_load_from(path: PathBuf) -> Result<Option<DeepcleanConfig>> {

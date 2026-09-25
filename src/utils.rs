@@ -1,6 +1,27 @@
 use anyhow::Result;
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
+
+/// Resolve the user's home directory from explicit environment values.
+///
+/// Prefers `HOME` (Unix convention), falls back to `USERPROFILE` (Windows).
+/// Empty values are treated as unset. Extracted as a pure function so it can
+/// be tested without mutating process environment (racy under parallel tests).
+pub fn resolve_home(home_env: Option<OsString>, userprofile_env: Option<OsString>) -> Option<PathBuf> {
+    home_env
+        .filter(|v| !v.is_empty())
+        .or_else(|| userprofile_env.filter(|v| !v.is_empty()))
+        .map(PathBuf::from)
+}
+
+/// Resolve the user's home directory from the process environment.
+pub fn home_dir() -> Option<PathBuf> {
+    resolve_home(
+        std::env::var_os("HOME"),
+        std::env::var_os("USERPROFILE"),
+    )
+}
 
 /// Format bytes into human-readable string
 pub fn format_bytes(bytes: u64) -> String {
@@ -113,6 +134,38 @@ mod tests {
         let size = get_directory_size(Path::new("/nonexistent/path"));
         assert!(size.is_ok());
         assert_eq!(size.unwrap(), 0);
+    }
+
+    #[test]
+    fn test_resolve_home_prefers_home() {
+        let home = resolve_home(
+            Some("/home/unix".into()),
+            Some("/profile/win".into()),
+        );
+        assert_eq!(home, Some(PathBuf::from("/home/unix")));
+    }
+
+    #[test]
+    fn test_resolve_home_falls_back_to_userprofile() {
+        let home = resolve_home(None, Some("/profile/win".into()));
+        assert_eq!(home, Some(PathBuf::from("/profile/win")));
+    }
+
+    #[test]
+    fn test_resolve_home_none_when_both_missing() {
+        assert_eq!(resolve_home(None, None), None);
+    }
+
+    #[test]
+    fn test_resolve_home_treats_empty_as_unset() {
+        assert_eq!(resolve_home(Some("".into()), None), None);
+        assert_eq!(resolve_home(Some("".into()), Some("/p".into())), Some(PathBuf::from("/p")));
+    }
+
+    #[test]
+    fn test_home_dir_resolves_in_test_env() {
+        // The test process always has HOME or USERPROFILE set on CI/dev machines.
+        assert!(home_dir().is_some(), "expected HOME or USERPROFILE to be set");
     }
 }
 
