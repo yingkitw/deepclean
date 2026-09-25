@@ -1,6 +1,6 @@
 [package]
 name = "deepclean"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 description = "Fast, parallel Rust tool to clean Cargo target/ directories, remove unused dependencies, and free disk space from global toolchain caches (npm, Bun, cargo, pip, uv, Homebrew, HuggingFace, and more)"
 license = "Apache-2.0"
