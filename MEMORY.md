@@ -20,21 +20,28 @@ Harvested patterns, domain knowledge, and conventions. Consult before starting w
 ### Deletion ordering and accounting
 - `src/cleaner.rs:19-74`: compute target size **once** before any deletion; both `cargo clean` and `remove_dir_all` remove the whole dir, so freed = pre-clean size. Never re-walk after deletion.
 - Fallback ordering: `cargo clean` first; on any failure (spawn error, non-zero status), fall back to direct `remove_dir_all(target)`. If target doesn't exist, report success (already clean).
-- Dry-run gate sits **before** any I/O and returns early with the computed size (`src/cleaner.rs:27-34`). Cache cleaning mirrors this (`src/caches.rs:228-236`).
+- Dry-run gate sits **before** any I/O and returns early with the computed size (`src/cleaner.rs:27-34`). Cache cleaning mirrors this (`clean_caches` dry-run branch, `src/caches.rs:331`).
 
 ### Per-item error isolation
-- `src/main.rs:279-414`: the rayon closure maps failures to `Ok(CleanResult { success: false, error })` instead of `Err`, so one broken project never aborts the batch; final exit code is 1 if any failed (`main.rs:438-440`). Cache mode does the same (`caches.rs:422-424`).
+- `src/main.rs:279-414`: the rayon closure maps failures to `Ok(CleanResult { success: false, error })` instead of `Err`, so one broken project never aborts the batch; final exit code is 1 if any failed (`main.rs:438-440`). Cache mode does the same (both `run_cache_mode` and `run_cache_all_mode`).
 - Anti-pattern avoided: collecting `Result` with `?` inside parallel iterators aborts remaining work on first error.
 
 ### What must never be deleted
-- Only `target/` under discovered project roots, and cache paths from the explicit registry. Never source files, `.git`, or anything not in the discovered scope. `remove_path` (`caches.rs:212-220`) handles dir/file/missing — missing is `Ok(())`, not an error.
+- Only `target/` under discovered project roots, and cache paths from the explicit registry. Never source files, `.git`, or anything not in the discovered scope. `remove_path` (`caches.rs:320`) handles dir/file/missing — missing is `Ok(())`, not an error.
 
 ## 3. Cache Discovery Patterns
 
 ### Registry structure
-- `src/caches.rs:58-195` (`build_registry`): pure function returning all known caches (16 entries) with `(id, name, category, risk, paths)`. `risk` is `"safe"` (download cache, re-fetches) or `"heavy"` (re-download required). `discover_caches` computes sizes in parallel (`par_iter_mut`) and **filters out entries with size 0** — nonexistent paths simply vanish from the list.
-- Cross-platform paths: `$HOME`-based (`.cargo`, `.npm`), XDG (`$XDG_CACHE_HOME` fallback `~/.cache`), macOS (`~/Library/Caches`), Windows (`%LOCALAPPDATA%` fallback `~/AppData/Local` via `caches::build_registry_for` `win_local` base — 2026-09-25). XDG-defaulted entries (`xdg.join(...)`) double as Windows paths for `~/.cache` tools (puppeteer, huggingface, torch, codex-runtimes).
-- Tests guard invariants: unique ids, risk values ∈ {safe, heavy}, non-empty names/categories (`caches.rs` unit tests).
+- `src/caches.rs` (`build_registry`): pure function returning all known caches (22 entries) with `(id, name, category, risk, paths)`. `risk` is `"safe"` (download cache, re-fetches) or `"heavy"` (re-download required). `discover_caches` computes sizes in parallel (`par_iter_mut`) and **filters out entries with size 0** — nonexistent paths simply vanish from the list.
+- Cross-platform paths: `$HOME`-based (`.cargo`, `.npm`, `.gradle`, `.m2`, `go/pkg/mod`, `Library/Developer/Xcode/DerivedData`), XDG (`$XDG_CACHE_HOME` fallback `~/.cache`), macOS (`~/Library/Caches`), Windows (`%LOCALAPPDATA%` fallback `~/AppData/Local` via `caches::build_registry_for` `win_local` base — 2026-09-25). XDG-defaulted entries (`xdg.join(...)`) double as Windows paths for `~/.cache` tools (puppeteer, huggingface, torch, codex-runtimes). Note (2026-09-29): DerivedData lives under `~/Library/Developer`, **not** `~/Library/Caches` — home-based, not mac-based.
+- **Risk-tag convention** (2026-09-29): browser/runtime *binaries* are `heavy` (playwright, puppeteer, cypress, electron) even though they re-fetch automatically; pure package/download caches are `safe` (npm, pip, gradle, maven, go-mod). When adding an entry, follow the doc comment on `CacheEntry.risk`, not gut feeling.
+- Tests guard invariants: unique ids, risk values ∈ {safe, heavy}, non-empty names/categories, per-entry path expectations (`test_registry_tier1_paths` is the template for adding new entries — asserts all platform variants) (`caches.rs` unit tests).
+
+### Non-interactive --all mode (2026-09-29)
+- `run_cache_mode(dry_run, json, all)` dispatches to `run_cache_all_mode` when `all`; selection rule isolated in pure `select_safe_caches` (filters `risk == "safe"`) — heavy caches can never leak into the non-interactive path, guarded by `test_select_safe_caches_filters_heavy` and an integration test asserting `huggingface`/`playwright` never appear in `--all --json` output.
+- CLI wiring: `--all` is `#[arg(long, requires = "caches")]` — clap enforces the pairing with a usage error (exit 2); assert via `Args::try_parse_from` in-process (**not** `catch_unwind` — clap calls `process::exit` on parse errors, which unwinding cannot catch).
+- JSON contract split: `--caches --json` → discovered `CacheEntry[]`; `--caches --all --json` → `CacheCleanResult[]` (clean report, dry-run included). Documented in README "JSON output" section.
+- **Non-interactive integration-test pattern**: spawn with `stdin(Stdio::null())` and assert success + absence of prompt strings ("Select caches to clean", "Proceed?"). EOF would make an interactive prompt cancel, so success alone proves no prompt ran.
 
 ### Home-directory resolution (2026-09-25)
 - `src/utils.rs` `resolve_home(home_env, userprofile_env)`: pure function; prefers `HOME`, falls back to `USERPROFILE`, treats empty strings as unset. `home_dir()` wraps the process-env read.
@@ -42,8 +49,8 @@ Harvested patterns, domain knowledge, and conventions. Consult before starting w
 - **Env-var testing pattern**: extract env reads into pure functions taking `Option<OsString>` args; mutating process env in tests is racy under the parallel test harness.
 
 ### Interactive selection
-- `parse_selection(input, count)` (`caches.rs:261-274`): pure, 1-based, comma/space separated, dedup, out-of-range and non-numeric tokens silently ignored — fully unit-testable without I/O.
-- Shortcut tokens: `q|quit|exit|n|""` → cancel; `all|a|y|yes` → everything (`caches.rs:346-350`).
+- `parse_selection(input, count)` (`caches.rs`, near `prompt_selection`): pure, 1-based, comma/space separated, dedup, out-of-range and non-numeric tokens silently ignored — fully unit-testable without I/O.
+- Shortcut tokens: `q|quit|exit|n|""` → cancel; `all|a|y|yes` → everything (in `prompt_selection`).
 
 ## 4. Dependency Detection Patterns
 

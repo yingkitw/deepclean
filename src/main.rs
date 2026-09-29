@@ -70,6 +70,11 @@ struct Args {
     /// sizes and interactively select which to clean
     #[arg(long)]
     caches: bool,
+
+    /// Non-interactive --caches mode: clean all discovered SAFE caches without
+    /// prompting (heavy caches are skipped)
+    #[arg(long, requires = "caches")]
+    all: bool,
 }
 
 /// Parse CLI args from an explicit argv vector (pure, testable).
@@ -145,7 +150,7 @@ fn main() -> Result<()> {
     let args = parse_args();
 
     if args.caches {
-        return caches::run_cache_mode(args.dry_run, args.json);
+        return caches::run_cache_mode(args.dry_run, args.json, args.all);
     }
 
     let config = load_config(&args.directory)
@@ -535,6 +540,20 @@ mod tests {
         let a = parse_args_from(args(&["cargo", "deepclean", "--caches", "--dry-run"]));
         assert!(a.caches);
         assert!(a.dry_run);
+    }
+
+    #[test]
+    fn test_parse_args_from_subcommand_caches_all() {
+        let a = parse_args_from(args(&["cargo", "deepclean", "--caches", "--all"]));
+        assert!(a.caches);
+        assert!(a.all);
+    }
+
+    #[test]
+    fn test_parse_args_all_requires_caches_flag() {
+        // `--all` without `--caches` must be rejected by clap (requires = "caches")
+        let result = Args::try_parse_from(["cargo-deepclean", "--all"]);
+        assert!(result.is_err(), "--all alone should fail arg parsing");
     }
 
     #[test]

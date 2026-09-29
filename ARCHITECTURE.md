@@ -56,10 +56,11 @@
 - Validates configuration
 
 ### 8. Global Cache Cleaning (`src/caches.rs`)
-- Discovers global toolchain caches (npm, bun, cargo registry, pip, uv, Homebrew, HuggingFace, torch, Puppeteer, Playwright, go-build, codex-runtimes)
+- Discovers global toolchain caches (npm, bun, cargo registry, pip, uv, Poetry, Gradle, Maven, Homebrew, HuggingFace, torch, Puppeteer, Playwright, Cypress, Electron, go-build, Go modules, Xcode DerivedData, codex-runtimes)
 - Computes reclaimable sizes in parallel
 - Tags each cache as `safe` (download cache) or `heavy` (re-download required)
 - Interactive multi-select prompt; `--json` emits the discovered list for automation
+- `--caches --all`: non-interactive path (`run_cache_all_mode`) — cleans every `safe` cache without prompting; heavy caches are always skipped there (`select_safe_caches` is the pure selection rule). `--json` flips the output to a `CacheCleanResult` array
 - Removes selected caches with `rm -rf` (tools regenerate on next use)
 
 ## Data Flow
@@ -67,7 +68,7 @@
 ```
 User Input (CLI args)
     ↓
-[if --caches] Cache Discovery + Interactive Select → Cache Cleaning → Summary
+[if --caches] Cache Discovery + Select (--all: no prompt, safe only) → Cache Cleaning → Summary
     ↓ (otherwise)
 Config Loading (if .deepclean.toml exists)
     ↓
@@ -252,7 +253,7 @@ Could support plugins for:
 ### Current
 - ✅ Linux
 - ✅ macOS
-- ⚠️ Windows — near-complete: project cleaning, dependency detection, home-directory resolution (`HOME` → `USERPROFILE` fallback in `utils::resolve_home`), and `--caches` registry paths (`%LOCALAPPDATA%`-based via `caches::build_registry_for`, covering npm, pip, uv, Poetry, pnpm, Yarn, Playwright, go-build; XDG-defaulted entries cover `~/.cache` tools like Puppeteer/HuggingFace/PyTorch) all work. Not CI-tested on Windows.
+- ⚠️ Windows — near-complete: project cleaning, dependency detection, home-directory resolution (`HOME` → `USERPROFILE` fallback in `utils::resolve_home`), and `--caches` registry paths (`%LOCALAPPDATA%`-based via `caches::build_registry_for`, covering npm, pip, uv, Poetry, pnpm, Yarn, Playwright, go-build, Cypress (`Cypress/Cache`), Electron (`electron/Cache`); XDG-defaulted entries cover `~/.cache` tools like Puppeteer/HuggingFace/PyTorch) all work. Not CI-tested on Windows.
 
 ### Platform-Specific Considerations
 - Path separators handled by Rust stdlib

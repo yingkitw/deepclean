@@ -124,7 +124,6 @@ Try running `cargo clean` manually in this project, or check file permissions.",
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rayon::prelude::*;
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;

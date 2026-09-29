@@ -63,10 +63,11 @@ cargo deepclean --dry-run
 
 ### Global toolchain cache cleaning (new)
 
-- ✅ **Discovers 16+ caches** — npm, Bun, pnpm, Yarn, cargo registry, pip, uv, Poetry, Homebrew, HuggingFace, PyTorch, Puppeteer, Playwright, go-build, codex-runtimes
+- ✅ **Discovers 22 caches** — npm, Bun, pnpm, Yarn, Cypress, Electron, cargo registry, pip, uv, Poetry, Gradle, Maven, Homebrew, HuggingFace, PyTorch, Puppeteer, Playwright, go-build, Go modules, Xcode DerivedData, codex-runtimes
 - ✅ **Estimated sizes** — shows reclaimable disk space per cache, computed in parallel
 - ✅ **Risk tagging** — each cache is marked **safe** (re-fetches on demand) or **heavy** (re-download required, e.g. model weights or browser binaries)
 - ✅ **Interactive selection** — pick caches by number, type `all`, or `q` to quit
+- ✅ **Non-interactive mode** — `--caches --all` cleans every safe cache without prompting
 - ✅ **Dry-run and JSON** — preview without deleting, or emit JSON for automation
 
 ## CLI Options
@@ -81,6 +82,7 @@ cargo deepclean --dry-run
 | `--clean-deps` | Detect and report unused dependencies |
 | `--remove-deps` | Remove unused dependencies (requires `cargo-edit`) |
 | `--caches` | List global toolchain caches and interactively select which to clean |
+| `--all` | With `--caches`: clean all safe caches non-interactively (heavy caches skipped) |
 | `--interactive` | Prompt for confirmation before cleaning projects |
 | `-v, --verbose` | Verbose output |
 | `--json` | Output results as JSON |
@@ -139,11 +141,17 @@ cargo deepclean --caches
 # Preview without deleting
 cargo deepclean --caches --dry-run
 
+# Non-interactive: clean every safe cache, no prompts (heavy caches skipped)
+cargo deepclean --caches --all
+
 # Machine-readable list of discovered caches (JSON array)
 cargo deepclean --caches --json
+
+# Clean safe caches and report results as JSON (automation/CI)
+cargo deepclean --caches --all --json
 ```
 
-Each cache is tagged **safe** (pure download cache that re-fetches on demand) or **heavy** (model weights, browser binaries, or runtimes that must re-download). Caches are removed with `rm -rf` and regenerated automatically by their tools on next use.
+Each cache is tagged **safe** (pure download cache that re-fetches on demand) or **heavy** (model weights, browser binaries, or runtimes that must re-download). Caches are removed with `rm -rf` and regenerated automatically by their tools on next use. `--caches --all` never touches heavy caches — clean those via the interactive selection.
 
 #### Supported caches
 
@@ -151,8 +159,10 @@ Each cache is tagged **safe** (pure download cache that re-fetches on demand) or
 |----------|--------|
 | Rust | cargo registry cache, cargo registry src |
 | Python | pip, uv, Poetry |
-| JS/TS | npm (`_cacache` + `_npx`), Bun, pnpm, Yarn |
-| Other | Homebrew, Puppeteer, Playwright, HuggingFace, PyTorch models, go-build, codex-runtimes |
+| JS/TS | npm (`_cacache` + `_npx`), Bun, pnpm, Yarn, Cypress, Electron |
+| Java | Gradle caches, Maven repository |
+| Apple | Xcode DerivedData |
+| Other | Homebrew, Puppeteer, Playwright, HuggingFace, PyTorch models, go-build, Go modules, codex-runtimes |
 
 ### JSON output for automation and CI
 
@@ -166,13 +176,19 @@ When `--clean-deps` is enabled, each entry in `results` also carries an
 is omitted entirely when dependency detection did not run, so existing JSON
 consumers see a stable shape.
 
+`--caches --json` emits the discovered caches as a JSON array of
+`{ id, name, category, risk, size_bytes, note }` entries. With `--caches --all
+--json`, the output is instead a JSON array of clean results
+(`{ id, name, success, freed_bytes, error }`), one per safe cache — dry-run
+included (`success: true`, nothing deleted).
+
 ## How It Works
 
 1. **Discovery** — recursively finds all `Cargo.toml` files using `walkdir` and resolves workspace membership by scanning manifests for `[workspace]` tables (no external commands).
 2. **Filtering** — applies exclude patterns and optional `--min-size` threshold.
 3. **Cleaning** — removes `target/` directories in parallel via `rayon`; falls back to direct `rm -rf` if `cargo clean` fails.
 4. **Dependency analysis** — parses `Cargo.toml` and scans `src/`, `examples/`, `tests/`, and `build.rs` for dependency usage; reports or removes unused crates.
-5. **Cache cleaning** (`--caches`) — scans known global cache locations, computes sizes in parallel, presents an interactive selection, and removes chosen caches.
+5. **Cache cleaning** (`--caches`) — scans known global cache locations, computes sizes in parallel, presents an interactive selection, and removes chosen caches. `--caches --all` skips the prompt and cleans every safe cache.
 
 ## Requirements
 
@@ -208,7 +224,7 @@ Only when you explicitly pass `--remove-deps`, which edits `Cargo.toml` to remov
 
 ### Which caches does `--caches` support?
 
-npm, Bun, pnpm, Yarn, cargo registry, pip, uv, Poetry, Homebrew, Puppeteer, Playwright, HuggingFace, PyTorch, go-build, and codex-runtimes. See the [Supported caches](#supported-caches) table above.
+npm, Bun, pnpm, Yarn, Cypress, Electron, cargo registry, pip, uv, Poetry, Gradle, Maven, Homebrew, Puppeteer, Playwright, HuggingFace, PyTorch, go-build, Go modules, Xcode DerivedData, and codex-runtimes. See the [Supported caches](#supported-caches) table above.
 
 ### Can I use deepclean in CI?
 

@@ -52,6 +52,8 @@
   - [x] Optionally remove them (with confirmation via `--remove-deps`)
 - [x] Add `--caches` flag to list and interactively clean global toolchain caches
   - [x] Discover caches (npm, bun, cargo, pip, uv, homebrew, huggingface, torch, puppeteer, playwright, go-build, codex-runtimes)
+  - [x] Tier-1 additions (2026-09-29): Gradle, Maven, Go modules, Xcode DerivedData (safe); Cypress, Electron (heavy, browser/runtime binaries)
+  - [x] `--caches --all`: non-interactive clean of all safe caches (heavy always skipped); `--all --json` emits `CacheCleanResult[]`
   - [x] Show estimated reclaimable space per cache
   - [x] Interactive multi-select (numbers, 'all', 'q')
   - [x] Risk tagging (safe vs heavy) and notes
@@ -109,6 +111,8 @@
 - [ ] Statistics tracking (how much space saved over time)
 - [ ] Web UI for monitoring cleaning operations
 - [ ] Support for remote cleaning (SSH)
-- [ ] `--caches --all` non-interactive flag to clean all safe caches without prompting
+- [x] `--caches --all` non-interactive flag to clean all safe caches without prompting (done 2026-09-29 — see Features; `--all` requires `--caches`, heavy caches never auto-cleaned)
 - [ ] Configurable cache registry via `.deepclean.toml` (custom paths, exclusions)
 - [ ] Use tool-native clean commands (e.g. `npm cache clean`, `brew cleanup`) where they clean more than `rm -rf`
+- [ ] Tier-2 caches (2026-09-29 competitive scan): SwiftPM, CocoaPods, NuGet (`~/.nuget/packages`), Bazel (`~/.cache/bazel`), sccache, Deno, JetBrains caches
+- [ ] Tier-3 heavy caches: Ollama models (`~/.ollama/models`), cargo git deps (`~/.cargo/git/db` + `checkouts`), rustup old toolchains (needs per-toolchain selectivity — likely defer)

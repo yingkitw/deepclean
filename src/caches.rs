@@ -233,6 +233,65 @@ fn build_registry_for(home: &Path, xdg: &Path, mac: &Path, win_local: &Path) -> 
             ],
         ),
         CacheEntry::new(
+            "go-mod",
+            "Go module cache",
+            "Other",
+            "safe",
+            vec![home.join("go/pkg/mod")],
+        )
+        .with_note("Re-downloads modules on next build"),
+        // JVM
+        CacheEntry::new(
+            "gradle",
+            "Gradle",
+            "Java",
+            "safe",
+            vec![home.join(".gradle/caches")],
+        )
+        .with_note("Build + dependency caches; regenerates on next build"),
+        CacheEntry::new(
+            "maven",
+            "Maven",
+            "Java",
+            "safe",
+            vec![home.join(".m2/repository")],
+        )
+        .with_note("Re-downloads artifacts on next build"),
+        // Apple
+        CacheEntry::new(
+            "xcode-deriveddata",
+            "Xcode DerivedData",
+            "Apple",
+            "safe",
+            vec![home.join("Library/Developer/Xcode/DerivedData")],
+        )
+        .with_note("Build artifacts; recompiles on next build"),
+        // JS/TS binaries
+        CacheEntry::new(
+            "cypress",
+            "Cypress",
+            "JS/TS",
+            "heavy",
+            vec![
+                mac.join("Cypress"),
+                xdg.join("Cypress"),
+                win_local.join("Cypress/Cache"),
+            ],
+        )
+        .with_note("Browser binaries; re-downloads on next run"),
+        CacheEntry::new(
+            "electron",
+            "Electron",
+            "JS/TS",
+            "heavy",
+            vec![
+                mac.join("electron"),
+                xdg.join("electron"),
+                win_local.join("electron/Cache"),
+            ],
+        )
+        .with_note("Electron binaries; re-downloads on next install"),
+        CacheEntry::new(
             "codex-runtimes",
             "Codex runtimes",
             "Other",
@@ -410,10 +469,27 @@ fn confirm() -> Result<bool> {
     ))
 }
 
+/// Filter a discovered cache list down to entries tagged `"safe"`.
+///
+/// Pure so the `--all` selection rule (heavy caches are never cleaned without
+/// an explicit interactive pick) is unit-testable.
+fn select_safe_caches(caches: &[CacheEntry]) -> Vec<CacheEntry> {
+    caches
+        .iter()
+        .filter(|c| c.risk == "safe")
+        .cloned()
+        .collect()
+}
+
 /// Entry point for `--caches` mode: discover caches, list them, let the user
 /// select, then clean. In JSON mode the discovered caches are printed as JSON
 /// and no prompt is shown (useful for automation/inspection).
-pub fn run_cache_mode(dry_run: bool, json: bool) -> Result<()> {
+///
+/// With `all` (`--caches --all`) the run is non-interactive: only `"safe"`
+/// caches are cleaned — no selection or confirmation prompt. With `--json`,
+/// cleaning is reported as a JSON array of [`CacheCleanResult`] instead of the
+/// discovered-cache listing.
+pub fn run_cache_mode(dry_run: bool, json: bool, all: bool) -> Result<()> {
     let caches = discover_caches();
 
     if caches.is_empty() {
@@ -423,6 +499,10 @@ pub fn run_cache_mode(dry_run: bool, json: bool) -> Result<()> {
             println!("{} No caches found to clean", "[INFO]".blue().bold());
         }
         return Ok(());
+    }
+
+    if all {
+        return run_cache_all_mode(&caches, dry_run, json);
     }
 
     if json {
@@ -466,6 +546,58 @@ pub fn run_cache_mode(dry_run: bool, json: bool) -> Result<()> {
     }
 
     let results = clean_caches(&selected, dry_run);
+    print_cache_results(&results);
+
+    if results.iter().any(|r| !r.success) {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Non-interactive `--all` path: clean every discovered `"safe"` cache without
+/// prompting. Heavy caches are skipped (they need an explicit interactive pick
+/// via plain `--caches`). JSON mode reports [`CacheCleanResult`]s.
+fn run_cache_all_mode(caches: &[CacheEntry], dry_run: bool, json: bool) -> Result<()> {
+    let safe = select_safe_caches(caches);
+
+    if json {
+        let results = clean_caches(&safe, dry_run);
+        println!("{}", serde_json::to_string_pretty(&results)?);
+        if results.iter().any(|r| !r.success) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    if safe.is_empty() {
+        println!(
+            "{} No safe caches found to clean (heavy caches require interactive --caches)",
+            "[INFO]".blue().bold()
+        );
+        return Ok(());
+    }
+
+    print_cache_list(&safe);
+    let total: u64 = safe.iter().map(|c| c.size_bytes).sum();
+    println!();
+    println!(
+        "{} Cleaning all {} safe cache(s), freeing ~{}",
+        "[INFO]".cyan().bold(),
+        safe.len(),
+        format_bytes(total)
+    );
+    if dry_run {
+        println!(
+            "{} DRY RUN MODE - no changes will be made",
+            "[INFO]".yellow().bold()
+        );
+    }
+    println!(
+        "{} Heavy caches skipped — clean them interactively with --caches",
+        "[INFO]".blue().bold()
+    );
+
+    let results = clean_caches(&safe, dry_run);
     print_cache_results(&results);
 
     if results.iter().any(|r| !r.success) {
@@ -745,5 +877,74 @@ mod tests {
         };
         assert!(find("cargo-cache").paths.contains(&home.join(".cargo/registry/cache")));
         assert!(find("bun").paths.contains(&home.join(".bun/install/cache")));
+    }
+
+    #[test]
+    fn test_registry_tier1_paths() {
+        let home = PathBuf::from("/home/t");
+        let mac = home.join("Library/Caches");
+        let xdg = home.join(".cache");
+        let win_local = home.join("AppData/Local");
+        let reg = build_registry_for(&home, &xdg, &mac, &win_local);
+        let find = |id: &str| {
+            reg.iter()
+                .find(|e| e.id == id)
+                .unwrap_or_else(|| panic!("missing entry {}", id))
+        };
+        // Xcode DerivedData lives under ~/Library/Developer, not ~/Library/Caches
+        assert!(find("xcode-deriveddata")
+            .paths
+            .contains(&home.join("Library/Developer/Xcode/DerivedData")));
+        assert!(find("gradle").paths.contains(&home.join(".gradle/caches")));
+        assert!(find("maven").paths.contains(&home.join(".m2/repository")));
+        assert!(find("go-mod").paths.contains(&home.join("go/pkg/mod")));
+        let cypress = find("cypress");
+        assert!(cypress.paths.contains(&mac.join("Cypress")));
+        assert!(cypress.paths.contains(&xdg.join("Cypress")));
+        assert!(cypress.paths.contains(&win_local.join("Cypress/Cache")));
+        let electron = find("electron");
+        assert!(electron.paths.contains(&mac.join("electron")));
+        assert!(electron.paths.contains(&xdg.join("electron")));
+        assert!(electron.paths.contains(&win_local.join("electron/Cache")));
+    }
+
+    #[test]
+    fn test_registry_tier1_risk_and_category() {
+        let reg = build_registry();
+        let find = |id: &str| {
+            reg.iter()
+                .find(|e| e.id == id)
+                .unwrap_or_else(|| panic!("missing entry {}", id))
+        };
+        for id in ["gradle", "maven", "go-mod", "xcode-deriveddata"] {
+            assert_eq!(find(id).risk, "safe", "{} should be safe", id);
+        }
+        // Browser/runtime binaries follow the playwright/puppeteer convention
+        for id in ["cypress", "electron"] {
+            assert_eq!(find(id).risk, "heavy", "{} should be heavy", id);
+        }
+        assert_eq!(find("xcode-deriveddata").category, "Apple");
+        assert_eq!(find("gradle").category, "Java");
+        assert_eq!(find("maven").category, "Java");
+    }
+
+    #[test]
+    fn test_select_safe_caches_filters_heavy() {
+        let mk = |id: &str, risk: &str| CacheEntry {
+            id: id.into(),
+            name: id.into(),
+            category: "T".into(),
+            risk: risk.into(),
+            paths: vec![],
+            size_bytes: 10,
+            note: None,
+        };
+        let caches = vec![mk("a", "safe"), mk("b", "heavy"), mk("c", "safe")];
+        let safe = select_safe_caches(&caches);
+        let ids: Vec<_> = safe.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "c"]);
+        assert!(select_safe_caches(&[]).is_empty());
+        let heavy_only = vec![mk("h", "heavy")];
+        assert!(select_safe_caches(&heavy_only).is_empty());
     }
 }
