@@ -59,6 +59,7 @@ Harvested patterns, domain knowledge, and conventions. Consult before starting w
 - Manifest cross-check: feature/alias references inside Cargo.toml count as usage (avoids false positives on renamed deps).
 - **Known limitation** (documented in docs/DEPENDENCY_CLEANING.md): workspace discovery collapses members to roots, so only the root manifest is checked; `[workspace.dependencies]` inheritance not resolved.
 - Removal shells out to `cargo-remove` (cargo-edit); detection itself has zero external-tool dependencies. `--remove-deps` implies `--clean-deps` (`main.rs:260`).
+- **toml 1.x feature gating** (2026-09-29): in `toml` 1.x, `toml::from_str` / `toml::Value` are gated behind the `serde` feature — `features = ["parse"]` alone no longer compiles them (`parse` only enables the parser). Fix: `toml = { version = "1", default-features = false, features = ["parse", "serde"] }` (Cargo.toml). No tree-weight penalty since `serde` is already a direct dep. `colored` 2→3 and `indicatif` 0.17→0.18 required zero code changes (`Colorize`, `control::set_override`, `ProgressStyle`, `MultiProgress` APIs stable).
 
 ## 5. Parallelism & Performance Patterns
 
