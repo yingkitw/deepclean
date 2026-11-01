@@ -215,6 +215,44 @@ fn interactive_cancel_preserves_target() {
 }
 
 #[test]
+fn interactive_lists_projects_with_relative_paths() {
+    let temp = TempDir::new().unwrap();
+    write_project(temp.path(), "services/nested-proj");
+
+    let bin = env!("CARGO_BIN_EXE_cargo-deepclean");
+    let mut child = Command::new(bin)
+        .arg("deepclean")
+        .arg(temp.path().to_str().unwrap())
+        .arg("--interactive")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cargo-deepclean");
+
+    {
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"n\n").unwrap();
+    }
+
+    let output = child.wait_with_output().expect("failed to wait");
+    assert!(
+        output.status.success(),
+        "cancelling should exit cleanly: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("• services/nested-proj"),
+        "confirmation list should show the path relative to the scan root, got: {stdout}"
+    );
+    assert!(
+        temp.path().join("services/nested-proj/target").exists(),
+        "cancelling must preserve target"
+    );
+}
+
+#[test]
 fn json_mode_suppresses_human_chatter() {
     let temp = TempDir::new().unwrap();
     write_project(temp.path(), "json-proj");

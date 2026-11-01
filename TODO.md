@@ -1,5 +1,20 @@
 # TODO
 
+## Scorecard (2026-10-17, after parallel size-walk optimization)
+
+| Dimension | Score | Evidence |
+|---|---|---|
+| Correctness & coverage | 5 | 122 tests green (3 new guard tests for parallel walk: sequential-equivalence, symlink skip, missing/empty); clippy back to documented baseline (2 pre-existing warnings in frozen project.rs) |
+| Deletion safety | 5 | No new deletion paths; sizing is read-only; parallel walk never follows symlinks (loop-safe), regression-tested |
+| Maintainability | 5 | New `utils::get_directory_size_parallel` added alongside untouched mature `get_directory_size`; deep levels delegate to the sequential primitive (no duplicated traversal logic) |
+| Docs alignment | 5 | TODO item checked off; MEMORY §5 + Gaps updated; ARCHITECTURE cache section describes intra-tree parallelism |
+| Wiring & ergonomics | 5 | No CLI surface change; all sizing paths (caches discovery, min-size/interactive/dry-run pass, real-run re-measure) use the parallel walk transparently |
+| Footprint | 5 | No new dependencies (rayon already present) |
+| **Total** | **30/30** | Benchmark: ~2.3–2.4x faster size walks on warm-cache trees (10k-file fixture and repo `target/`); larger on cold cache |
+
+### Improvement item from weakest dimension
+- [x] Parallelize `get_directory_size` traversal itself — the only open performance TODO; done (see TODO Performance section below and MEMORY.md §5 "Depth-bounded parallel size walk")
+
 ## Scorecard (2026-09-25, after orchestration integration tests)
 
 | Dimension | Score | Evidence |
@@ -68,7 +83,7 @@
 - [ ] Optimize directory size calculation
   - [ ] Use faster method (consider `du` command on Unix)
   - [x] Cache size results during discovery (`cleaner::compute_target_sizes` — one parallel pass reused by `--min-size` filtering, `--interactive` confirmation, and dry-run reporting; real runs still re-measure pre-deletion for accurate freed-byte accounting)
-  - [ ] Parallelize `get_directory_size` traversal itself
+  - [x] Parallelize `get_directory_size` traversal itself (`utils::get_directory_size_parallel` — rayon for the first 2 directory levels, sequential walkdir below; used by cache discovery and all `target/` sizing paths; ~2.3–2.4x on warm-cache trees)
   - [x] Parallel size computation for `--caches` discovery and `--min-size` filtering
 - [ ] Add progress indication for size calculation phase
 

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use crate::project::Project;
-use crate::utils::get_directory_size;
+use crate::utils::get_directory_size_parallel;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,7 +28,7 @@ pub fn compute_target_sizes(projects: &[Project]) -> HashMap<PathBuf, u64> {
         .map(|project| {
             let target_dir = project.path.join("target");
             let size = if target_dir.exists() {
-                get_directory_size(&target_dir).unwrap_or(0)
+                get_directory_size_parallel(&target_dir)
             } else {
                 0
             };
@@ -56,17 +56,9 @@ pub fn clean_project(
 ) -> Result<CleanResult> {
     let target_dir = project.path.join("target");
     let freed_bytes = if dry_run {
-        cached_size.unwrap_or_else(|| {
-            if target_dir.exists() {
-                get_directory_size(&target_dir).unwrap_or(0)
-            } else {
-                0
-            }
-        })
-    } else if target_dir.exists() {
-        get_directory_size(&target_dir).unwrap_or(0)
+        cached_size.unwrap_or_else(|| get_directory_size_parallel(&target_dir))
     } else {
-        0
+        get_directory_size_parallel(&target_dir)
     };
 
     if dry_run {
@@ -124,6 +116,7 @@ Try running `cargo clean` manually in this project, or check file permissions.",
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::get_directory_size;
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;

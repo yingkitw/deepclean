@@ -1,4 +1,5 @@
 use anyhow::Result;
+use rayon::prelude::*;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -55,6 +56,53 @@ pub fn get_directory_size(path: &Path) -> Result<u64> {
         }
     }
     Ok(total)
+}
+
+/// Depth (in directory levels below the root) up to which traversal runs
+/// rayon-parallel; deeper levels walk sequentially per directory. Bounds rayon
+/// task overhead so directories holding thousands of tiny files don't pay
+/// scheduling costs dominated by per-task spawn.
+const PARALLEL_WALK_DEPTH: usize = 2;
+
+/// Parallel variant of [`get_directory_size`] for large trees (global caches,
+/// big workspace `target/` dirs). Shallow levels are walked with rayon,
+/// deeper levels sequentially. Returns 0 for missing/unreadable paths and
+/// never follows symlinks — matching `get_directory_size`'s walkdir
+/// semantics (no double-counting, no symlink loops).
+pub fn get_directory_size_parallel(path: &Path) -> u64 {
+    if !path.is_dir() {
+        return 0;
+    }
+    dir_size(path, 0)
+}
+
+fn dir_size(path: &Path, depth: usize) -> u64 {
+    let entries = match std::fs::read_dir(path) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    let mut file_bytes = 0u64;
+    let mut subdirs = Vec::new();
+    for entry in entries.flatten() {
+        // read_dir's file_type() does not follow symlinks, so symlinks fall
+        // through both branches and contribute nothing — same as the
+        // no-follow walkdir in get_directory_size.
+        if let Ok(ft) = entry.file_type() {
+            if ft.is_file() {
+                file_bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            } else if ft.is_dir() {
+                subdirs.push(entry.path());
+            }
+        }
+    }
+    let subdir_bytes: u64 = if depth + 1 < PARALLEL_WALK_DEPTH {
+        subdirs.par_iter().map(|d| dir_size(d, depth + 1)).sum()
+    } else {
+        // Below the parallel threshold, delegate whole subtrees to the
+        // sequential walkdir primitive — same semantics, no per-dir task churn.
+        subdirs.iter().map(|d| get_directory_size(d).unwrap_or(0)).sum()
+    };
+    file_bytes + subdir_bytes
 }
 
 /// Parse size string (e.g., "100MB", "1GB") to bytes
@@ -134,6 +182,57 @@ mod tests {
         let size = get_directory_size(Path::new("/nonexistent/path"));
         assert!(size.is_ok());
         assert_eq!(size.unwrap(), 0);
+    }
+
+    #[test]
+    fn test_get_directory_size_parallel_matches_sequential() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path();
+        // Nested tree: root/{a,b}/{x,y}/{deep.txt}, root/top.txt
+        for a in ["a", "b"] {
+            for x in ["x", "y"] {
+                let dir = root.join(a).join(x);
+                fs::create_dir_all(&dir).unwrap();
+                fs::write(dir.join("deep.txt"), "deep").unwrap();
+            }
+        }
+        fs::write(root.join("top.txt"), "top!").unwrap();
+        // Empty dir contributes 0 but must not break traversal.
+        fs::create_dir_all(root.join("a/empty")).unwrap();
+
+        assert_eq!(
+            get_directory_size_parallel(root),
+            get_directory_size(root).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_get_directory_size_parallel_skips_symlinks() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path();
+        fs::write(root.join("real.txt"), "12345").unwrap();
+        let sub = root.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("real.txt"), sub.join("link.txt")).unwrap();
+            std::os::unix::fs::symlink(&sub, root.join("loop")).unwrap();
+            // Symlinked file must not be counted (no double-count), and the
+            // symlinked dir must not be traversed (no loop).
+            assert_eq!(get_directory_size_parallel(root), 5);
+        }
+        #[cfg(not(unix))]
+        assert_eq!(
+            get_directory_size_parallel(root),
+            get_directory_size(root).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_get_directory_size_parallel_nonexistent_and_empty() {
+        assert_eq!(get_directory_size_parallel(Path::new("/nonexistent/path")), 0);
+        let temp = tempfile::TempDir::new().unwrap();
+        assert_eq!(get_directory_size_parallel(temp.path()), 0);
     }
 
     #[test]

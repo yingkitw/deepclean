@@ -18,7 +18,7 @@ use project::find_cargo_projects;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use utils::parse_size;
 
 #[derive(Parser, Debug)]
@@ -107,10 +107,22 @@ fn parse_args() -> Args {
     parse_args_from(std::env::args().collect())
 }
 
+/// Display a project path relative to the scan root for human output.
+/// JSON output keeps absolute paths (contract stability for CI consumers).
+/// A project that IS the root displays as ".".
+fn relative_display(path: &Path, root: &Path) -> String {
+    match path.strip_prefix(root) {
+        Ok(rel) if rel.as_os_str().is_empty() => ".".to_string(),
+        Ok(rel) => rel.display().to_string(),
+        Err(_) => path.display().to_string(),
+    }
+}
+
 fn confirm_interactive(
     projects: &[project::Project],
     dry_run: bool,
     target_sizes: &HashMap<PathBuf, u64>,
+    root: &Path,
 ) -> Result<bool> {
     println!();
     println!(
@@ -123,7 +135,7 @@ fn confirm_interactive(
         let size = target_sizes.get(&target_dir).copied().unwrap_or(0);
         println!(
             "  • {} ({})",
-            project.path.display(),
+            relative_display(&project.path, root),
             utils::format_bytes(size)
         );
     }
@@ -259,7 +271,7 @@ Ensure the path exists and you have permission to read it.",
         return Ok(());
     }
 
-    if args.interactive && !confirm_interactive(&projects, args.dry_run, &target_sizes)? {
+    if args.interactive && !confirm_interactive(&projects, args.dry_run, &target_sizes, &root)? {
         if !settings.json {
             println!("{} Cancelled by user", "[INFO]".blue().bold());
         }
@@ -307,9 +319,9 @@ Ensure the path exists and you have permission to read it.",
 
             if args.verbose && !settings.json {
                 println!(
-                    "{} Cleaning: {:?}",
+                    "{} Cleaning: {}",
                     "[INFO]".blue().bold(),
-                    project.path
+                    relative_display(&project.path, &root)
                 );
             }
 
@@ -554,6 +566,30 @@ mod tests {
         // `--all` without `--caches` must be rejected by clap (requires = "caches")
         let result = Args::try_parse_from(["cargo-deepclean", "--all"]);
         assert!(result.is_err(), "--all alone should fail arg parsing");
+    }
+
+    #[test]
+    fn test_relative_display_nested_project() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            relative_display(Path::new("/repo/services/api"), root),
+            "services/api"
+        );
+    }
+
+    #[test]
+    fn test_relative_display_root_itself_shows_dot() {
+        let root = Path::new("/repo");
+        assert_eq!(relative_display(root, root), ".");
+    }
+
+    #[test]
+    fn test_relative_display_falls_back_when_outside_root() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            relative_display(Path::new("/other/place"), root),
+            "/other/place"
+        );
     }
 
     #[test]

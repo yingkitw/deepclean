@@ -69,15 +69,29 @@ Harvested patterns, domain knowledge, and conventions. Consult before starting w
 - Plain real runs (no flags) skip the sizing pass entirely — one walk per project inside `clean_project`, same as before. Walk counts: min-size+interactive went 3→1, min-size+dry-run 2→1.
 - Mature-module compliance: `utils::get_directory_size` untouched (still the sequential primitive); caching lives in cleaner.rs/main.rs which are not frozen.
 
+### Depth-bounded parallel size walk (2026-10-17)
+- `src/utils.rs` `get_directory_size_parallel(path) -> u64`: NEW function alongside the mature sequential `get_directory_size` (which stays byte-for-byte untouched — Mature Module Policy). Shallow levels (depth 0–1 below root) walk with rayon `par_iter` over `read_dir` children; at depth ≥ 2 each subtree delegates to `get_directory_size(...).unwrap_or(0)` — the sequential walkdir primitive. Measured ~2.3–2.4x on warm-cache trees (10k files / repo `target/`).
+- **Why depth-bounded**: rayon task spawn overhead dominates when directories hold thousands of tiny files; parallelizing only the top levels captures the win (top-level dirs are the natural split points for caches like `registry/cache/<hash>/...`) without per-file task churn.
+- **Why a new function, not editing `get_directory_size`**: mature-module rule (extend, don't edit); also keeps a clean sequential reference for cross-checking (unit test asserts `parallel == sequential` on a nested fixture).
+- **Semantics contract**: returns `u64` (never `Err`); missing/unreadable → 0; symlinks contribute nothing (`read_dir`'s `file_type()` doesn't follow them — matches walkdir no-follow, avoids double-count and loops). Callers no longer need `.unwrap_or(0)` / `exists()` guards — `get_directory_size_parallel` handles both.
+- Call sites: `caches::discover_caches` (sum over `paths`), `cleaner::compute_target_sizes`, `cleaner::clean_project` (both dry-run fallback and real-run pre-deletion re-measure). Nested rayon (projects × intra-tree) is safe — global pool work-steals.
+- Guard tests: `test_get_directory_size_parallel_matches_sequential` (incl. empty subdir), `..._skips_symlinks` (unix: symlinked file not counted, symlinked dir not traversed), `..._nonexistent_and_empty`.
+
 - Global rayon pool built once from resolved `jobs` (`main.rs`); CLI `--jobs` overrides config overrides `available_parallelism()` (`config.rs:91-93`).
 - `par_iter().with_min_len(1)` for project cleaning keeps per-item progress increments responsive.
-- Parallel size computation: `entries.par_iter_mut().for_each(...)` in `discover_caches`. `get_directory_size` itself is still sequential walkdir (open TODO item — do not claim otherwise in docs).
+- Parallel size computation: `entries.par_iter_mut().for_each(...)` in `discover_caches`. Since 2026-10-17, intra-tree traversal is parallel too — see "Depth-bounded parallel size walk" below.
 - Progress bars (`indicatif`) are `Option`-gated: disabled when `--json` or `--verbose`, so output stays parseable. The `MultiProgress` is `Arc`-shared into rayon closures.
 
 ## 6. Output & CLI Patterns
 
 ### Cargo subcommand arg handling (critical)
 - `src/main.rs:73-94` (`parse_args`): when argv[1] == "deepclean" (invoked as `cargo deepclean --flag`), re-prepend the program name so clap doesn't swallow the first flag as argv[0]. Regression risk if refactored — keep the test coverage in `tests/dry_run.rs` (`dry_run_via_subcommand_path_preserves_targets`).
+
+### Relative paths in human output (2026-10-17)
+- `src/main.rs` `relative_display(path, root)`: human-facing project listings show paths relative to the scan root — `confirm_interactive`'s "Found N project(s) to clean" bullets and the verbose `Cleaning:` line. A project that IS the root displays as `.`; paths outside the root fall back to absolute.
+- **JSON contract unchanged**: `CleanResult.path` stays absolute (contract stability for CI consumers — see "JSON contract evolution"). Relativization happens only at human print sites in main.rs.
+- The scan root is always printed up front ("Starting cargo clean from: ..."), so relative paths are unambiguous.
+- Guard tests: 3 unit tests on `relative_display` (nested, root-itself → ".", outside-root fallback) + integration test `interactive_lists_projects_with_relative_paths` (asserts the `• services/nested-proj` bullet form, which cannot match an absolute path).
 
 ### JSON vs human output
 - Serde structs: `Summary` (output.rs), `CleanResult` (cleaner.rs), `CacheEntry`/`CacheCleanResult` (caches.rs). `CacheEntry.paths` is `#[serde(skip)]` — internal paths never leak into JSON.
@@ -115,7 +129,7 @@ Harvested patterns, domain knowledge, and conventions. Consult before starting w
 - Rule of thumb: docs and code disagree → update the **doc**, and add the missing test if behavior was actually wrong.
 
 ## Gaps / Open Items Noted
-- `get_directory_size` sequential traversal is the remaining performance TODO.
+- ~~`get_directory_size` sequential traversal~~ — closed 2026-10-17 (see "Depth-bounded parallel size walk" in §5).
 - Windows support not CI-tested (no Windows runner); registry paths are unit-tested via `build_registry_for` only.
 - web2md MCP server unavailable in current environment; competitive-intelligence web research deferred (Step 8) — use built-in fetch when needed and harvest any durable findings here.
 

@@ -1,4 +1,4 @@
-use crate::utils::{format_bytes, get_directory_size, home_dir};
+use crate::utils::{format_bytes, get_directory_size_parallel, home_dir};
 use anyhow::Result;
 use colored::Colorize;
 use rayon::prelude::*;
@@ -311,7 +311,7 @@ pub fn discover_caches() -> Vec<CacheEntry> {
             .paths
             .iter()
             .filter(|p| p.exists())
-            .map(|p| get_directory_size(p).unwrap_or(0))
+            .map(|p| get_directory_size_parallel(p))
             .sum();
     });
     entries.into_iter().filter(|e| e.size_bytes > 0).collect()
@@ -609,6 +609,7 @@ fn run_cache_all_mode(caches: &[CacheEntry], dry_run: bool, json: bool) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::get_directory_size;
     use std::fs;
     use tempfile::TempDir;
 

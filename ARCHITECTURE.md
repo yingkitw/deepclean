@@ -57,7 +57,7 @@
 
 ### 8. Global Cache Cleaning (`src/caches.rs`)
 - Discovers global toolchain caches (npm, bun, cargo registry, pip, uv, Poetry, Gradle, Maven, Homebrew, HuggingFace, torch, Puppeteer, Playwright, Cypress, Electron, go-build, Go modules, Xcode DerivedData, codex-runtimes)
-- Computes reclaimable sizes in parallel
+- Computes reclaimable sizes in parallel — across cache entries (`rayon`) and within each large tree (depth-bounded parallel traversal in `utils::get_directory_size_parallel`; deep subtrees delegate to the sequential walkdir primitive)
 - Tags each cache as `safe` (download cache) or `heavy` (re-download required)
 - Interactive multi-select prompt; `--json` emits the discovered list for automation
 - `--caches --all`: non-interactive path (`run_cache_all_mode`) — cleans every `safe` cache without prompting; heavy caches are always skipped there (`select_safe_caches` is the pure selection rule). `--json` flips the output to a `CacheCleanResult` array
